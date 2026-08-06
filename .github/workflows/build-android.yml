@@ -40,6 +40,12 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
+      - name: Fix Kotlin version conflict
+        run: |
+          sed -i "s/kotlinVersion = .*/kotlinVersion = '1.9.24'/" android/variables.gradle || true
+          echo "--- variables.gradle ---"
+          cat android/variables.gradle
+
       - name: Sync Capacitor Android
         run: npx cap sync android
 

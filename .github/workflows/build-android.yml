@@ -40,11 +40,20 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
-      - name: Fix Kotlin version conflict
+      - name: Fix Kotlin duplicate class conflict
         run: |
-          sed -i "s/kotlinVersion = .*/kotlinVersion = '1.9.24'/" android/variables.gradle || true
-          echo "--- variables.gradle ---"
-          cat android/variables.gradle
+          cat >> android/build.gradle << 'GRADLE'
+
+          subprojects {
+              configurations.all {
+                  resolutionStrategy {
+                      force "org.jetbrains.kotlin:kotlin-stdlib:1.8.22"
+                      force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22"
+                      force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22"
+                  }
+              }
+          }
+          GRADLE
 
       - name: Sync Capacitor Android
         run: npx cap sync android

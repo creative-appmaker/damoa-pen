@@ -55,6 +55,19 @@ jobs:
           }
           GRADLE
 
+      - name: Add Korean ML Kit OCR model
+        run: |
+          # 1. app/build.gradle 에 한글 모델 의존성 추가
+          sed -i '/dependencies {/a\    implementation "com.google.mlkit:text-recognition-korean:16.0.1"' android/app/build.gradle
+
+          # 2. AndroidManifest.xml 에 앱 설치 시 한글 모델 자동 다운로드 설정
+          sed -i 's|</application>|    <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="ocr_kr"/>\n    </application>|' android/app/src/main/AndroidManifest.xml
+
+          echo "--- app/build.gradle dependencies ---"
+          grep -A5 "dependencies {" android/app/build.gradle | head -20
+          echo "--- AndroidManifest.xml ---"
+          grep -i "mlkit\|DEPENDENCIES" android/app/src/main/AndroidManifest.xml
+
       - name: Sync Capacitor Android
         run: npx cap sync android
 

@@ -721,14 +721,31 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
             </button>
             {showSizePicker && (
               <div ref={sizePickerRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-3 shadow-xl z-50" style={{minWidth:220}}>
-                {/* Slider */}
+                {/* 직접 입력 + 슬라이더 */}
                 <div className="mb-3">
-                  <div className="flex justify-between text-[10px] text-stone-400 mb-1">
-                    <span>0.5px</span>
-                    <span className="font-black text-purple-600">{penSize.toFixed(1)}px</span>
-                    <span>20px</span>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-[10px] text-stone-400 shrink-0">굵기</span>
+                    <input
+                      type="number" min="0.1" max="20" step="0.1"
+                      value={penSize}
+                      onChange={e => {
+                        const v = parseFloat(e.target.value);
+                        if (!isNaN(v)) setPenSize(Math.min(20, Math.max(0.1, Math.round(v * 10) / 10)));
+                      }}
+                      onPointerDown={e => e.stopPropagation()}
+                      onClick={e => e.stopPropagation()}
+                      style={{touchAction:'auto'}}
+                      className="w-20 text-center font-black text-sm text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-700 rounded-lg py-1 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                    />
+                    <span className="text-[10px] text-stone-400">px</span>
+                    <span className="ml-auto">
+                      <span className="rounded-full bg-stone-800 dark:bg-white inline-block" style={{width:Math.max(3,Math.min(14,penSize))+'px',height:Math.max(3,Math.min(14,penSize))+'px'}}/>
+                    </span>
                   </div>
-                  <input type="range" min="0.5" max="20" step="0.1" value={penSize}
+                  <div className="flex justify-between text-[10px] text-stone-400 mb-1">
+                    <span>0.1</span><span>20px</span>
+                  </div>
+                  <input type="range" min="0.1" max="20" step="0.1" value={penSize}
                     onChange={e => setPenSize(parseFloat(e.target.value))}
                     className="w-full accent-purple-600 cursor-pointer"/>
                 </div>

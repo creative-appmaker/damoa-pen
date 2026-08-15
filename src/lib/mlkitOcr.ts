@@ -1,22 +1,32 @@
+/**
+ * ML Kit Text Recognition — 이미지 기반 OCR (한글 포함)
+ * window.Capacitor.Plugins 를 통해 네이티브 플러그인에 직접 접근합니다.
+ */
+
 export function isNativeAndroid(): boolean {
   try {
-    // @ts-ignore
-    return window?.Capacitor?.getPlatform?.() === 'android';
+    return (window as any)?.Capacitor?.getPlatform?.() === 'android';
   } catch {
     return false;
   }
 }
 
 export async function runMlKitOcr(dataUrl: string): Promise<string> {
-  // Dynamic imports with @vite-ignore so Vite's dev server doesn't try to resolve them
-  const { Filesystem, Directory } = await import(/* @vite-ignore */ '@capacitor/filesystem');
-  const { TextRecognition } = await import(/* @vite-ignore */ '@capacitor-mlkit/text-recognition');
+  const cap = (window as any).Capacitor;
+  if (!cap) throw new Error('Capacitor를 찾을 수 없습니다.');
+
+  const Filesystem = cap.Plugins?.Filesystem;
+  const TextRecognition = cap.Plugins?.TextRecognition;
+
+  if (!Filesystem) throw new Error('Filesystem 플러그인이 없습니다.');
+  if (!TextRecognition) throw new Error('TextRecognition 플러그인이 없습니다.');
 
   const base64Data = dataUrl.split(',')[1];
   const fileName = `damoa_ocr_${Date.now()}.jpg`;
 
-  await Filesystem.writeFile({ path: fileName, data: base64Data, directory: Directory.Cache });
-  const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
+  // Directory.Cache = 'CACHE'
+  await Filesystem.writeFile({ path: fileName, data: base64Data, directory: 'CACHE' });
+  const { uri } = await Filesystem.getUri({ path: fileName, directory: 'CACHE' });
 
   let recognizedText = '';
   try {
@@ -26,7 +36,9 @@ export async function runMlKitOcr(dataUrl: string): Promise<string> {
       .join('\n')
       .trim();
   } finally {
-    try { await Filesystem.deleteFile({ path: fileName, directory: Directory.Cache }); } catch {}
+    try {
+      await Filesystem.deleteFile({ path: fileName, directory: 'CACHE' });
+    } catch {}
   }
   return recognizedText;
 }

@@ -208,9 +208,40 @@ jobs:
       - name: Register InkRecognition plugin in MainActivity
         run: |
           MAIN="android/app/src/main/java/com/damoa/pen/MainActivity.java"
-          # registerPlugin 추가 (super.onCreate 바로 전에 삽입)
-          sed -i 's/super\.onCreate(savedInstanceState);/registerPlugin(InkRecognitionPlugin.class);\n        super.onCreate(savedInstanceState);/' "$MAIN"
-          echo "--- MainActivity.java ---"
+          echo "--- 원본 MainActivity.java ---"
+          cat "$MAIN"
+
+          # Capacitor 7은 기본 MainActivity에 onCreate가 없을 수 있으므로
+          # Python으로 안전하게 처리
+          python3 << 'PYEOF'
+          import re
+
+          path = "android/app/src/main/java/com/damoa/pen/MainActivity.java"
+          with open(path, "r") as f:
+              content = f.read()
+
+          if "registerPlugin(InkRecognitionPlugin.class)" in content:
+              print("이미 등록됨, 스킵")
+          elif "super.onCreate" in content:
+              # onCreate가 있으면 그 앞에 삽입
+              content = content.replace(
+                  "super.onCreate(savedInstanceState);",
+                  "registerPlugin(InkRecognitionPlugin.class);\n        super.onCreate(savedInstanceState);"
+              )
+          else:
+              # onCreate가 없으면 클래스 바디에 주입
+              content = re.sub(
+                  r'(public class MainActivity extends BridgeActivity\s*\{)',
+                  r'\1\n    @Override\n    public void onCreate(android.os.Bundle savedInstanceState) {\n        registerPlugin(InkRecognitionPlugin.class);\n        super.onCreate(savedInstanceState);\n    }',
+                  content
+              )
+
+          with open(path, "w") as f:
+              f.write(content)
+          print("완료")
+          PYEOF
+
+          echo "--- 수정된 MainActivity.java ---"
           cat "$MAIN"
 
       - name: Sync Capacitor Android

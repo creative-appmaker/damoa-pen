@@ -4,6 +4,7 @@ import { getAllNotes, saveNote, deleteNote } from './lib/storage';
 import { PenCanvas } from './components/PenCanvas';
 import { NoteList } from './components/NoteList';
 import { SettingsModal } from './components/SettingsModal';
+import { LockScreen, LOCK_KEY } from './components/LockScreen';
 
 type View = 'list' | 'canvas';
 
@@ -12,6 +13,7 @@ export default function App() {
   const [view, setView] = useState<View>('list');
   const [editingNote, setEditingNote] = useState<PenNote | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [isLocked,  setIsLocked]  = useState(() => localStorage.getItem(LOCK_KEY) === 'true');
   const [darkMode, setDarkMode] = useState(() => {
     const stored = localStorage.getItem('damoa_pen_dark');
     if (stored !== null) return stored === 'true';
@@ -81,6 +83,7 @@ export default function App() {
 
   return (
     <div className="h-dvh overflow-hidden bg-stone-50 dark:bg-slate-950 text-stone-900 dark:text-slate-100">
+      {isLocked && <LockScreen onUnlock={() => setIsLocked(false)}/>}
       {view === 'list' ? (
         <NoteList
           notes={notes}

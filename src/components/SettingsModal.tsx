@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { X, Key, Download, Upload, Trash2, Check } from 'lucide-react';
+import { X, Key, Download, Upload, Trash2, Check, Lock, LockOpen, ShieldCheck } from 'lucide-react';
 import { exportAllNotes, importNotes } from '../lib/storage';
+import { PatternInput, PinInput, hashSecret, LOCK_KEY, TYPE_KEY, HASH_KEY, HINT_KEY } from './LockScreen';
 
 interface Props {
   onClose: () => void;
@@ -8,11 +9,29 @@ interface Props {
   onToggleDark: () => void;
 }
 
+type LockStep =
+  | 'idle'           // show main security panel
+  | 'choose_type'    // pick pattern or PIN
+  | 'set_pattern'    // draw new pattern
+  | 'confirm_pattern'// confirm the new pattern
+  | 'set_pin'        // enter new PIN
+  | 'confirm_pin'    // confirm the new PIN
+  | 'verify_old';    // verify existing lock before changing
+
 export const SettingsModal: React.FC<Props> = ({ onClose, darkMode, onToggleDark }) => {
   const [apiKey, setApiKey] = useState('');
   const [saved, setSaved] = useState(false);
   const [importMsg, setImportMsg] = useState('');
   const fileRef = React.useRef<HTMLInputElement>(null);
+
+  // ── Security state ──────────────────────────────────────────────────────
+  const [lockEnabled, setLockEnabled] = useState(() => localStorage.getItem(LOCK_KEY) === 'true');
+  const [lockType,    setLockType]    = useState<'pattern'|'pin'>(() => (localStorage.getItem(TYPE_KEY)||'pattern') as 'pattern'|'pin');
+  const [lockStep,    setLockStep]    = useState<LockStep>('idle');
+  const [lockHint,    setLockHint]    = useState(() => localStorage.getItem(HINT_KEY) || '');
+  const [firstVal,    setFirstVal]    = useState('');  // first entry (for confirm)
+  const [lockErr,     setLockErr]     = useState('');
+  const [lockOk,      setLockOk]      = useState('');
 
   useEffect(() => {
     setApiKey(localStorage.getItem('damoa_gemini_api_key') || '');
@@ -45,6 +64,51 @@ export const SettingsModal: React.FC<Props> = ({ onClose, darkMode, onToggleDark
       setImportMsg('✅ 가져오기 완료! 페이지를 새로고침하세요.');
     } catch {
       setImportMsg('❌ 파일 형식이 올바르지 않습니다.');
+    }
+  };
+
+  // ── Lock helpers ────────────────────────────────────────────────────────
+  const saveLock = (hash: string, type: 'pattern'|'pin') => {
+    localStorage.setItem(LOCK_KEY, 'true');
+    localStorage.setItem(TYPE_KEY, type);
+    localStorage.setItem(HASH_KEY, hash);
+    localStorage.setItem(HINT_KEY, lockHint);
+    setLockEnabled(true); setLockType(type);
+    setLockStep('idle'); setFirstVal(''); setLockErr('');
+    setLockOk(type === 'pattern' ? '✅ 패턴 잠금이 설정되었습니다!' : '✅ PIN 잠금이 설정되었습니다!');
+    setTimeout(() => setLockOk(''), 3000);
+  };
+
+  const disableLock = () => {
+    localStorage.removeItem(LOCK_KEY);
+    localStorage.removeItem(TYPE_KEY);
+    localStorage.removeItem(HASH_KEY);
+    localStorage.removeItem(HINT_KEY);
+    setLockEnabled(false); setLockStep('idle');
+    setLockOk('🔓 잠금이 해제되었습니다.'); setTimeout(() => setLockOk(''), 2000);
+  };
+
+  // Pattern flow
+  const onFirstPattern = (pattern: number[]) => {
+    setFirstVal(pattern.join(',')); setLockStep('confirm_pattern'); setLockErr('');
+  };
+  const onConfirmPattern = (pattern: number[]) => {
+    if (pattern.join(',') === firstVal) {
+      saveLock(hashSecret(firstVal), 'pattern');
+    } else {
+      setLockErr('패턴이 일치하지 않습니다. 다시 시도하세요.'); setLockStep('set_pattern'); setFirstVal('');
+    }
+  };
+
+  // PIN flow
+  const onFirstPin = (pin: string) => {
+    setFirstVal(pin); setLockStep('confirm_pin'); setLockErr('');
+  };
+  const onConfirmPin = (pin: string) => {
+    if (pin === firstVal) {
+      saveLock(hashSecret(firstVal), 'pin');
+    } else {
+      setLockErr('PIN이 일치하지 않습니다. 다시 시도하세요.'); setLockStep('set_pin'); setFirstVal('');
     }
   };
 
@@ -100,6 +164,130 @@ export const SettingsModal: React.FC<Props> = ({ onClose, darkMode, onToggleDark
             </div>
             {apiKey && (
               <p className="text-[11px] text-emerald-600 font-bold mt-1.5">✅ API 키가 설정되어 있습니다.</p>
+            )}
+          </div>
+
+          {/* ── Security ── */}
+          <div>
+            <div className="text-xs font-extrabold text-stone-400 dark:text-slate-500 uppercase tracking-wider mb-3">보안 잠금</div>
+
+            {lockOk && (
+              <p className="text-xs font-bold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 rounded-xl px-3 py-2 mb-3">{lockOk}</p>
+            )}
+            {lockErr && (
+              <p className="text-xs font-bold text-red-500 bg-red-50 dark:bg-red-950/40 rounded-xl px-3 py-2 mb-3">{lockErr}</p>
+            )}
+
+            {lockStep === 'idle' && (
+              <div className="space-y-2">
+                {/* Status row */}
+                <div className="flex items-center justify-between px-4 py-3 bg-stone-50 dark:bg-slate-800 rounded-2xl border border-stone-200 dark:border-slate-700">
+                  <div className="flex items-center gap-2.5">
+                    {lockEnabled
+                      ? <Lock className="w-4 h-4 text-purple-600"/>
+                      : <LockOpen className="w-4 h-4 text-stone-400"/>}
+                    <div>
+                      <div className="font-black text-sm text-stone-800 dark:text-slate-200">
+                        {lockEnabled ? `잠금 설정됨 (${lockType === 'pattern' ? '패턴' : 'PIN'})` : '잠금 없음'}
+                      </div>
+                      {lockEnabled && (
+                        <div className="text-[11px] text-stone-400 dark:text-slate-500">앱 시작 시 잠금 화면 표시</div>
+                      )}
+                    </div>
+                  </div>
+                  <span className={`text-xs font-black px-2.5 py-1 rounded-xl ${lockEnabled ? 'bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300' : 'bg-stone-100 text-stone-500 dark:bg-slate-700 dark:text-slate-400'}`}>
+                    {lockEnabled ? 'ON' : 'OFF'}
+                  </span>
+                </div>
+
+                {/* Action buttons */}
+                {!lockEnabled ? (
+                  <button type="button" onClick={() => { setLockStep('choose_type'); setLockErr(''); }}
+                    className="w-full flex items-center gap-3 px-4 py-3 bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 rounded-2xl hover:bg-purple-100 cursor-pointer">
+                    <ShieldCheck className="w-4 h-4 text-purple-600"/>
+                    <div className="text-left">
+                      <div className="font-black text-sm text-purple-900 dark:text-purple-200">잠금 설정하기</div>
+                      <div className="text-[11px] text-purple-600 dark:text-purple-400">패턴 또는 PIN 선택</div>
+                    </div>
+                  </button>
+                ) : (
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => { setLockStep('choose_type'); setLockErr(''); setFirstVal(''); }}
+                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 rounded-xl hover:bg-purple-100 cursor-pointer text-xs font-black text-purple-700 dark:text-purple-300">
+                      <Lock className="w-3.5 h-3.5"/> 변경
+                    </button>
+                    <button type="button" onClick={disableLock}
+                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-xl hover:bg-red-100 cursor-pointer text-xs font-black text-red-600">
+                      <LockOpen className="w-3.5 h-3.5"/> 잠금 해제
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {lockStep === 'choose_type' && (
+              <div className="space-y-2">
+                <p className="text-sm font-bold text-stone-700 dark:text-slate-300 text-center mb-3">잠금 방식 선택</p>
+                <button type="button" onClick={() => { setLockType('pattern'); setLockStep('set_pattern'); setLockErr(''); }}
+                  className="w-full flex items-center gap-3 px-4 py-3 bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 rounded-2xl hover:bg-purple-100 cursor-pointer">
+                  <span className="text-2xl">🔲</span>
+                  <div>
+                    <div className="font-black text-sm text-purple-900 dark:text-purple-200">패턴 잠금</div>
+                    <div className="text-[11px] text-purple-600 dark:text-purple-400">3×3 격자에 패턴 그리기</div>
+                  </div>
+                </button>
+                <button type="button" onClick={() => { setLockType('pin'); setLockStep('set_pin'); setLockErr(''); }}
+                  className="w-full flex items-center gap-3 px-4 py-3 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-2xl hover:bg-blue-100 cursor-pointer">
+                  <span className="text-2xl">🔢</span>
+                  <div>
+                    <div className="font-black text-sm text-blue-900 dark:text-blue-200">PIN 잠금</div>
+                    <div className="text-[11px] text-blue-600 dark:text-blue-400">6자리 숫자 입력</div>
+                  </div>
+                </button>
+                <button type="button" onClick={() => setLockStep('idle')}
+                  className="w-full text-xs font-bold text-stone-400 hover:text-stone-600 cursor-pointer py-1 text-center">
+                  취소
+                </button>
+              </div>
+            )}
+
+            {(lockStep === 'set_pattern' || lockStep === 'confirm_pattern') && (
+              <div className="flex flex-col items-center gap-2">
+                <PatternInput
+                  onComplete={lockStep === 'set_pattern' ? onFirstPattern : onConfirmPattern}
+                  label={lockStep === 'set_pattern' ? '새 패턴을 그려주세요 (최소 4개 점)' : '패턴을 한 번 더 그려주세요'}
+                  minDots={4}
+                />
+                {/* Hint */}
+                {lockStep === 'set_pattern' && (
+                  <div className="w-full mt-1">
+                    <input value={lockHint} onChange={e => setLockHint(e.target.value)}
+                      placeholder="힌트 (선택사항, 잠금 화면에 표시됨)"
+                      className="w-full text-xs px-3 py-2 bg-stone-50 dark:bg-slate-800 border border-stone-200 dark:border-slate-700 rounded-xl outline-none text-stone-700 dark:text-slate-300 placeholder-stone-300"/>
+                  </div>
+                )}
+                <button type="button" onClick={() => { setLockStep('idle'); setFirstVal(''); setLockErr(''); }}
+                  className="text-xs font-bold text-stone-400 hover:text-stone-600 cursor-pointer">취소</button>
+              </div>
+            )}
+
+            {(lockStep === 'set_pin' || lockStep === 'confirm_pin') && (
+              <div className="flex flex-col items-center gap-2">
+                <PinInput
+                  onComplete={lockStep === 'set_pin' ? onFirstPin : onConfirmPin}
+                  label={lockStep === 'set_pin' ? '새 PIN 6자리를 입력하세요' : 'PIN을 한 번 더 입력하세요'}
+                  length={6}
+                />
+                {lockStep === 'set_pin' && (
+                  <div className="w-full mt-1">
+                    <input value={lockHint} onChange={e => setLockHint(e.target.value)}
+                      placeholder="힌트 (선택사항)"
+                      className="w-full text-xs px-3 py-2 bg-stone-50 dark:bg-slate-800 border border-stone-200 dark:border-slate-700 rounded-xl outline-none text-stone-700 dark:text-slate-300 placeholder-stone-300"/>
+                  </div>
+                )}
+                <button type="button" onClick={() => { setLockStep('idle'); setFirstVal(''); setLockErr(''); }}
+                  className="text-xs font-bold text-stone-400 hover:text-stone-600 cursor-pointer">취소</button>
+              </div>
             )}
           </div>
 

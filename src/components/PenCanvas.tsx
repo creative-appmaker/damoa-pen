@@ -208,6 +208,7 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
   const [paperType,         setPaperType]         = useState<'white'|'yellow'|'black'>(initPT);
   const [penColor,          setPenColor]          = useState(initPT === 'black' ? '#ffffff' : '#1c1917');
   const [penSize,           setPenSize]           = useState(2);
+  const [penSizeInput,      setPenSizeInput]      = useState('2.0'); // 직접 입력용 문자열
   const [penType,           setPenType]           = useState<PenType>('pen');
   const [fountainIntensity, setFountainIntensity] = useState(1.2);
   const [isEraser,          setIsEraser]          = useState(false);
@@ -723,37 +724,86 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
               <div ref={sizePickerRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-3 shadow-xl z-50" style={{minWidth:220}}>
                 {/* 직접 입력 + 슬라이더 */}
                 <div className="mb-3">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-[10px] text-stone-400 shrink-0">굵기</span>
-                    <input
-                      type="number" min="0.1" max="20" step="0.1"
-                      value={penSize}
-                      onChange={e => {
-                        const v = parseFloat(e.target.value);
-                        if (!isNaN(v)) setPenSize(Math.min(20, Math.max(0.1, Math.round(v * 10) / 10)));
-                      }}
-                      onPointerDown={e => e.stopPropagation()}
-                      onClick={e => e.stopPropagation()}
-                      style={{touchAction:'auto'}}
-                      className="w-20 text-center font-black text-sm text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-700 rounded-lg py-1 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                    />
-                    <span className="text-[10px] text-stone-400">px</span>
-                    <span className="ml-auto">
-                      <span className="rounded-full bg-stone-800 dark:bg-white inline-block" style={{width:Math.max(3,Math.min(14,penSize))+'px',height:Math.max(3,Math.min(14,penSize))+'px'}}/>
+                  {/* 숫자 직접 입력 */}
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-[10px] text-stone-500 dark:text-slate-400 shrink-0 font-bold">굵기</span>
+                    <div className="flex items-center flex-1 bg-purple-50 dark:bg-purple-950/40 border-2 border-purple-300 dark:border-purple-700 rounded-xl overflow-hidden">
+                      {/* − 버튼 */}
+                      <button type="button"
+                        onPointerDown={e => e.stopPropagation()}
+                        onClick={e => {
+                          e.stopPropagation();
+                          const next = Math.max(0.1, Math.round((penSize - 0.1) * 10) / 10);
+                          setPenSize(next); setPenSizeInput(next.toFixed(1));
+                        }}
+                        className="px-3 py-2 text-purple-600 font-black text-lg hover:bg-purple-100 dark:hover:bg-purple-900/40 cursor-pointer select-none">−</button>
+                      {/* 텍스트 입력 */}
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={penSizeInput}
+                        onChange={e => setPenSizeInput(e.target.value)}
+                        onFocus={e => { e.stopPropagation(); e.target.select(); }}
+                        onBlur={e => {
+                          const v = parseFloat(penSizeInput);
+                          if (!isNaN(v) && v > 0) {
+                            const clamped = Math.min(20, Math.max(0.1, Math.round(v * 10) / 10));
+                            setPenSize(clamped); setPenSizeInput(clamped.toFixed(1));
+                          } else {
+                            setPenSizeInput(penSize.toFixed(1));
+                          }
+                        }}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            const v = parseFloat(penSizeInput);
+                            if (!isNaN(v) && v > 0) {
+                              const clamped = Math.min(20, Math.max(0.1, Math.round(v * 10) / 10));
+                              setPenSize(clamped); setPenSizeInput(clamped.toFixed(1));
+                            } else {
+                              setPenSizeInput(penSize.toFixed(1));
+                            }
+                            (e.target as HTMLInputElement).blur();
+                          }
+                        }}
+                        onPointerDown={e => e.stopPropagation()}
+                        onClick={e => e.stopPropagation()}
+                        style={{ touchAction: 'auto' }}
+                        className="flex-1 text-center font-black text-base text-purple-700 dark:text-purple-200 bg-transparent outline-none py-2 min-w-0"
+                      />
+                      {/* + 버튼 */}
+                      <button type="button"
+                        onPointerDown={e => e.stopPropagation()}
+                        onClick={e => {
+                          e.stopPropagation();
+                          const next = Math.min(20, Math.round((penSize + 0.1) * 10) / 10);
+                          setPenSize(next); setPenSizeInput(next.toFixed(1));
+                        }}
+                        className="px-3 py-2 text-purple-600 font-black text-lg hover:bg-purple-100 dark:hover:bg-purple-900/40 cursor-pointer select-none">+</button>
+                    </div>
+                    <span className="text-[10px] text-stone-400 shrink-0">px</span>
+                    {/* 미리보기 */}
+                    <span className="w-8 flex items-center justify-center shrink-0">
+                      <span className="rounded-full bg-stone-800 dark:bg-white inline-block"
+                        style={{width:Math.max(2,Math.min(16,penSize))+'px', height:Math.max(2,Math.min(16,penSize))+'px'}}/>
                     </span>
                   </div>
+                  {/* 슬라이더 */}
                   <div className="flex justify-between text-[10px] text-stone-400 mb-1">
                     <span>0.1</span><span>20px</span>
                   </div>
                   <input type="range" min="0.1" max="20" step="0.1" value={penSize}
-                    onChange={e => setPenSize(parseFloat(e.target.value))}
+                    onChange={e => {
+                      const v = parseFloat(e.target.value);
+                      setPenSize(v); setPenSizeInput(v.toFixed(1));
+                    }}
                     className="w-full accent-purple-600 cursor-pointer"/>
                 </div>
                 {/* Quick presets */}
                 <div className="grid grid-cols-4 gap-1">
                   {QUICK_SIZES.map(s => (
                     <button key={s} type="button"
-                      onClick={() => { setPenSize(s); setShowSizePicker(false); }}
+                      onClick={() => { setPenSize(s); setPenSizeInput(s.toFixed(1)); setShowSizePicker(false); }}
                       className={`py-1.5 rounded-xl text-[10px] font-black flex flex-col items-center gap-0.5 cursor-pointer ${penSize===s?'bg-purple-600 text-white':'bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-slate-300 hover:bg-stone-200'}`}>
                       <span className="rounded-full bg-current" style={{width:Math.max(2,Math.min(12,s))+'px',height:Math.max(2,Math.min(12,s))+'px'}}/>
                       <span>{s}</span>

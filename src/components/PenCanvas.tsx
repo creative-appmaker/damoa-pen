@@ -716,7 +716,7 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
               <span className="flex items-center justify-center w-5 h-5">
                 <span className="rounded-full bg-current" style={{width:Math.max(3,Math.min(14,penSize))+'px',height:Math.max(3,Math.min(14,penSize))+'px'}}/>
               </span>
-              <span className="text-[11px]">{penSize % 1 === 0 ? penSize : penSize.toFixed(1)}px</span>
+              <span className="text-[11px]">{penSize.toFixed(1)}px</span>
               <span className="text-[10px] text-stone-400">▼</span>
             </button>
             {showSizePicker && (
@@ -725,10 +725,10 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
                 <div className="mb-3">
                   <div className="flex justify-between text-[10px] text-stone-400 mb-1">
                     <span>0.5px</span>
-                    <span className="font-black text-purple-600">{penSize % 1 === 0 ? penSize : penSize.toFixed(1)}px</span>
+                    <span className="font-black text-purple-600">{penSize.toFixed(1)}px</span>
                     <span>20px</span>
                   </div>
-                  <input type="range" min="0.5" max="20" step="0.5" value={penSize}
+                  <input type="range" min="0.5" max="20" step="0.1" value={penSize}
                     onChange={e => setPenSize(parseFloat(e.target.value))}
                     className="w-full accent-purple-600 cursor-pointer"/>
                 </div>

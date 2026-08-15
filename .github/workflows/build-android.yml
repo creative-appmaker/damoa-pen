@@ -19,7 +19,7 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Setup Java 17
+      - name: Setup Java 21
         uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
@@ -55,18 +55,163 @@ jobs:
           }
           GRADLE
 
-      - name: Add Korean ML Kit OCR model
+      - name: Add ML Kit dependencies (Korean text + Digital Ink)
         run: |
-          # 1. app/build.gradle 에 한글 모델 의존성 추가
-          sed -i '/dependencies {/a\    implementation "com.google.mlkit:text-recognition-korean:16.0.1"' android/app/build.gradle
+          # 1. app/build.gradle 에 한글 OCR + Digital Ink 의존성 추가
+          sed -i '/dependencies {/a\    implementation "com.google.mlkit:text-recognition-korean:16.0.1"\n    implementation "com.google.mlkit:digital-ink-recognition:18.1.0"' android/app/build.gradle
 
           # 2. AndroidManifest.xml 에 앱 설치 시 한글 모델 자동 다운로드 설정
           sed -i 's|</application>|    <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="ocr_kr"/>\n    </application>|' android/app/src/main/AndroidManifest.xml
 
           echo "--- app/build.gradle dependencies ---"
-          grep -A5 "dependencies {" android/app/build.gradle | head -20
-          echo "--- AndroidManifest.xml ---"
-          grep -i "mlkit\|DEPENDENCIES" android/app/src/main/AndroidManifest.xml
+          grep -A10 "dependencies {" android/app/build.gradle | head -20
+
+      - name: Create InkRecognition Capacitor plugin (Java)
+        run: |
+          JAVA_DIR="android/app/src/main/java/com/damoa/pen"
+          mkdir -p "$JAVA_DIR"
+
+          cat > "$JAVA_DIR/InkRecognitionPlugin.java" << 'JAVA'
+          package com.damoa.pen;
+
+          import com.getcapacitor.JSArray;
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+          import com.google.mlkit.common.model.DownloadConditions;
+          import com.google.mlkit.common.model.RemoteModelManager;
+          import com.google.mlkit.vision.digitalink.DigitalInkRecognition;
+          import com.google.mlkit.vision.digitalink.DigitalInkRecognitionModel;
+          import com.google.mlkit.vision.digitalink.DigitalInkRecognitionModelIdentifier;
+          import com.google.mlkit.vision.digitalink.DigitalInkRecognizer;
+          import com.google.mlkit.vision.digitalink.DigitalInkRecognizerOptions;
+          import com.google.mlkit.vision.digitalink.Ink;
+          import com.google.mlkit.vision.digitalink.RecognitionCandidate;
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+
+          @CapacitorPlugin(name = "InkRecognition")
+          public class InkRecognitionPlugin extends Plugin {
+
+              @PluginMethod
+              public void recognize(PluginCall call) {
+                  try {
+                      JSArray strokesJs = call.getArray("strokes");
+                      String langTag = call.getString("languageCode", "ko-KR");
+
+                      Ink.Builder inkBuilder = Ink.builder();
+                      for (int si = 0; si < strokesJs.length(); si++) {
+                          JSONObject strokeObj = strokesJs.getJSONObject(si);
+                          JSONArray ptsJs = strokeObj.getJSONArray("points");
+                          Ink.Stroke.Builder sb = Ink.Stroke.builder();
+                          for (int pi = 0; pi < ptsJs.length(); pi++) {
+                              JSONObject pt = ptsJs.getJSONObject(pi);
+                              float x = (float) pt.getDouble("x");
+                              float y = (float) pt.getDouble("y");
+                              long t = pt.has("t") ? pt.getLong("t") : (long)(si * 1200 + pi * 16);
+                              sb.addPoint(Ink.Point.create(x, y, t));
+                          }
+                          inkBuilder.addStroke(sb.build());
+                      }
+                      Ink ink = inkBuilder.build();
+
+                      DigitalInkRecognitionModelIdentifier modelId =
+                          DigitalInkRecognitionModelIdentifier.fromLanguageTag(langTag);
+                      if (modelId == null) {
+                          call.reject("지원하지 않는 언어: " + langTag);
+                          return;
+                      }
+
+                      DigitalInkRecognitionModel model =
+                          DigitalInkRecognitionModel.builder(modelId).build();
+                      DigitalInkRecognizer recognizer =
+                          DigitalInkRecognition.getClient(
+                              DigitalInkRecognizerOptions.builder(model).build());
+
+                      recognizer.recognize(ink)
+                          .addOnSuccessListener(result -> {
+                              JSObject ret = new JSObject();
+                              JSArray candidates = new JSArray();
+                              String topText = "";
+                              for (RecognitionCandidate c : result.getCandidates()) {
+                                  JSObject cObj = new JSObject();
+                                  cObj.put("text", c.getText());
+                                  if (c.getScore() != null) cObj.put("score", c.getScore());
+                                  candidates.put(cObj);
+                                  if (topText.isEmpty()) topText = c.getText();
+                              }
+                              ret.put("text", topText);
+                              ret.put("candidates", candidates);
+                              recognizer.close();
+                              call.resolve(ret);
+                          })
+                          .addOnFailureListener(e -> {
+                              recognizer.close();
+                              // 모델 미다운로드 시 자동 다운로드 후 재시도
+                              RemoteModelManager manager = RemoteModelManager.getInstance();
+                              manager.download(model, new DownloadConditions.Builder().build())
+                                  .addOnSuccessListener(v -> {
+                                      DigitalInkRecognizer r2 = DigitalInkRecognition.getClient(
+                                          DigitalInkRecognizerOptions.builder(model).build());
+                                      r2.recognize(ink)
+                                          .addOnSuccessListener(result2 -> {
+                                              JSObject ret2 = new JSObject();
+                                              String top2 = result2.getCandidates().isEmpty()
+                                                  ? "" : result2.getCandidates().get(0).getText();
+                                              ret2.put("text", top2);
+                                              r2.close();
+                                              call.resolve(ret2);
+                                          })
+                                          .addOnFailureListener(e2 -> {
+                                              r2.close();
+                                              call.reject(e2.getMessage());
+                                          });
+                                  })
+                                  .addOnFailureListener(e2 ->
+                                      call.reject("모델 다운로드 실패: " + e2.getMessage()));
+                          });
+                  } catch (Exception e) {
+                      call.reject(e.getMessage());
+                  }
+              }
+
+              @PluginMethod
+              public void downloadModel(PluginCall call) {
+                  try {
+                      String langTag = call.getString("languageCode", "ko-KR");
+                      DigitalInkRecognitionModelIdentifier modelId =
+                          DigitalInkRecognitionModelIdentifier.fromLanguageTag(langTag);
+                      if (modelId == null) { call.reject("지원하지 않는 언어"); return; }
+
+                      DigitalInkRecognitionModel model =
+                          DigitalInkRecognitionModel.builder(modelId).build();
+                      RemoteModelManager.getInstance()
+                          .download(model, new DownloadConditions.Builder().build())
+                          .addOnSuccessListener(v -> {
+                              JSObject ret = new JSObject();
+                              ret.put("downloaded", true);
+                              call.resolve(ret);
+                          })
+                          .addOnFailureListener(e -> call.reject(e.getMessage()));
+                  } catch (Exception e) {
+                      call.reject(e.getMessage());
+                  }
+              }
+          }
+          JAVA
+
+          echo "✅ InkRecognitionPlugin.java 생성 완료"
+          ls -la "$JAVA_DIR/"
+
+      - name: Register InkRecognition plugin in MainActivity
+        run: |
+          MAIN="android/app/src/main/java/com/damoa/pen/MainActivity.java"
+          # registerPlugin 추가 (super.onCreate 바로 전에 삽입)
+          sed -i 's/super\.onCreate(savedInstanceState);/registerPlugin(InkRecognitionPlugin.class);\n        super.onCreate(savedInstanceState);/' "$MAIN"
+          echo "--- MainActivity.java ---"
+          cat "$MAIN"
 
       - name: Sync Capacitor Android
         run: npx cap sync android
@@ -89,5 +234,7 @@ jobs:
       - name: Build summary
         run: |
           echo "## ✅ APK 빌드 완료!" >> $GITHUB_STEP_SUMMARY
+          echo "- ML Kit Digital Ink Recognition (한글 필기 인식, 오프라인)" >> $GITHUB_STEP_SUMMARY
+          echo "- ML Kit Text Recognition Korean (이미지 OCR 폴백)" >> $GITHUB_STEP_SUMMARY
           echo "APK: **Actions → 이 실행 → Artifacts → damoa-pen-debug**" >> $GITHUB_STEP_SUMMARY
           ls -lh android/app/build/outputs/apk/debug/

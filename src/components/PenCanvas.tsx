@@ -6,7 +6,7 @@ import {
 import { PenNote } from '../types';
 
 // ── Types ────────────────────────────────────────────────────────────────────
-interface Point { x: number; y: number; pressure: number; }
+interface Point { x: number; y: number; pressure: number; t?: number; }
 
 type PenType = 'pen' | 'fountain' | 'highlighter';
 
@@ -427,7 +427,7 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
       try { target.setPointerCapture(e.pointerId); } catch {}
       const rect = target.getBoundingClientRect();
       cachedRectRef.current = rect;
-      const p: Point = { x: e.clientX - rect.left, y: e.clientY - rect.top, pressure: e.pressure > 0 ? e.pressure : 0.5 };
+      const p: Point = { x: e.clientX - rect.left, y: e.clientY - rect.top, pressure: e.pressure > 0 ? e.pressure : 0.5, t: Date.now() };
       isDrawingRef.current = true;
       if (ie) { handleEraseAt(p, et, ps); return; }
 
@@ -453,7 +453,7 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
       const rect = cachedRectRef.current || target.getBoundingClientRect();
       const events = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e];
       for (const ev of events) {
-        const p: Point = { x: ev.clientX - rect.left, y: ev.clientY - rect.top, pressure: ev.pressure > 0 ? ev.pressure : 0.5 };
+        const p: Point = { x: ev.clientX - rect.left, y: ev.clientY - rect.top, pressure: ev.pressure > 0 ? ev.pressure : 0.5, t: Date.now() };
         if (ie) { handleEraseAt(p, et, ps); continue; }
         if (!currentStrokeRef.current) continue;
         const pts = currentStrokeRef.current.points;
@@ -508,13 +508,27 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
   const handleOcr = async (customDataUrl?: string) => {
     const dataUrl = customDataUrl || getExportDataUrl();
     if (!dataUrl || strokesRef.current.length === 0) { setOcrMsg('캔버스가 비어있습니다.'); return ''; }
-    const { isNativeAndroid, runMlKitOcr } = await import('../lib/mlkitOcr');
+    const { isNativeAndroid } = await import('../lib/mlkitOcr');
     if (isNativeAndroid()) {
-      setIsOcrLoading(true); setOcrMsg('✨ ML Kit 판독 중 (오프라인)...');
+      // 1차 시도: ML Kit Digital Ink Recognition (스트로크 데이터 기반, 더 정확)
+      setIsOcrLoading(true); setOcrMsg('✨ ML Kit 필기 인식 중 (오프라인)...');
       try {
+        const { runInkOcr } = await import('../lib/inkOcr');
+        const recognized = await runInkOcr(strokesRef.current);
+        if (recognized) {
+          setOcrText(recognized);
+          setOcrMsg(`✨ Ink 인식: "${recognized.slice(0, 50)}${recognized.length > 50 ? '...' : ''}"`);
+          setIsOcrLoading(false); return recognized;
+        }
+      } catch (inkErr) {
+        console.warn('Ink OCR 실패, 이미지 OCR로 폴백:', inkErr);
+      }
+      // 2차 폴백: 이미지 기반 ML Kit OCR
+      try {
+        const { runMlKitOcr } = await import('../lib/mlkitOcr');
         const compressed = await compress(dataUrl, 1600, 0.85);
         const recognized = await runMlKitOcr(compressed);
-        if (recognized) { setOcrText(recognized); setOcrMsg(`✨ ML Kit: "${recognized.slice(0,50)}..."`); }
+        if (recognized) { setOcrText(recognized); setOcrMsg(`✨ ML Kit 이미지: "${recognized.slice(0,50)}..."`); }
         else setOcrMsg('인식하지 못했습니다.');
         setIsOcrLoading(false); return recognized;
       } catch { setOcrMsg('ML Kit 오류'); setIsOcrLoading(false); return ''; }

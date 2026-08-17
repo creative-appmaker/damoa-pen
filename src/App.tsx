@@ -81,6 +81,7 @@ export default function App() {
     pdfPageCount?: number,
     pageStrokes?: import('./types').SavedStroke[][],
     penSettings?: PenSettings,
+    pageImages?: (string | undefined)[],
     id?: string,
   ) => {
     const now = Date.now();
@@ -100,6 +101,7 @@ export default function App() {
       pdfPageCount:  pdfPageCount  ?? editingNote?.pdfPageCount,
       pageStrokes:   pageStrokes   ?? editingNote?.pageStrokes,
       penSettings:   penSettings   ?? editingNote?.penSettings,
+      pageImages:    pageImages    ?? editingNote?.pageImages,
     };
     await saveNote(note);
     await loadNotes();

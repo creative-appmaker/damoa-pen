@@ -32,7 +32,7 @@ jobs:
         run: npm install
 
       - name: Install Capacitor packages
-        run: npm install --no-save @capacitor/core @capacitor/cli @capacitor/android @capacitor/filesystem @capacitor-mlkit/text-recognition
+        run: npm install --no-save @capacitor/core @capacitor/cli @capacitor/android @capacitor/filesystem
 
       - name: Build web assets
         run: npm run build
@@ -55,13 +55,10 @@ jobs:
           }
           GRADLE
 
-      - name: Add ML Kit dependencies (Korean text + Digital Ink)
+      - name: Add ML Kit dependencies (Digital Ink only)
         run: |
-          # 1. app/build.gradle 에 한글 OCR + Digital Ink 의존성 추가
-          sed -i '/dependencies {/a\    implementation "com.google.mlkit:text-recognition-korean:16.0.1"\n    implementation "com.google.mlkit:digital-ink-recognition:18.1.0"' android/app/build.gradle
-
-          # 2. AndroidManifest.xml 에 앱 설치 시 한글 모델 자동 다운로드 설정
-          sed -i 's|</application>|    <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="ocr_kr"/>\n    </application>|' android/app/src/main/AndroidManifest.xml
+          # Digital Ink Recognition만 추가 (Korean text-recognition 제거 → APK 경량화)
+          sed -i '/dependencies {/a\    implementation "com.google.mlkit:digital-ink-recognition:18.1.0"' android/app/build.gradle
 
           echo "--- app/build.gradle dependencies ---"
           grep -A10 "dependencies {" android/app/build.gradle | head -20

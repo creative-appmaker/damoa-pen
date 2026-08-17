@@ -37,8 +37,9 @@ export interface PenNote {
   pdfBase64?: string;       // PDF 원본 파일 (base64)
   pdfText?: string;         // PDF 전체 텍스트 (검색용, getTextContent 추출)
   pdfPageCount?: number;    // PDF 총 페이지 수
-  pageStrokes?: SavedStroke[][];  // 페이지별 손글씨 스트로크
-  penSettings?: PenSettings;      // 마지막 사용 펜 설정 (노트별 저장/복원)
+  pageStrokes?: SavedStroke[][];          // 페이지별 손글씨 스트로크
+  penSettings?: PenSettings;             // 마지막 사용 펜 설정 (노트별 저장/복원)
+  pageImages?: (string | undefined)[];   // 페이지별 첨부 사진 (base64 JPEG)
 }
 
 // ── 펜 설정 ───────────────────────────────────────────────────────────────────

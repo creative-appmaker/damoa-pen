@@ -29,6 +29,7 @@ interface Props {
     pdfBase64?: string, pdfText?: string, pdfPageCount?: number,
     pageStrokes?: SavedStroke[][],
     penSettings?: PenSettings,
+    pageImages?: (string|undefined)[],
     id?: string,
   ) => void;
   onBack: () => void;
@@ -214,8 +215,11 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
   const cachedRectRef   = useRef<DOMRect | null>(null);
   const rafPendingRef   = useRef(false);
   const pdfInputRef     = useRef<HTMLInputElement | null>(null);
+  const imgInputRef     = useRef<HTMLInputElement | null>(null); // 사진 첨부 input
   const pdfDocRef       = useRef<any>(null);               // pdf.js PDFDocumentProxy
   const pdfCacheRef     = useRef<Map<number, string>>(new Map()); // 인메모리 JPEG 캐시 (pageIdx → dataUrl)
+  const pageUserImgRef  = useRef<HTMLImageElement | null>(null);  // 현재 페이지 첨부 사진
+  const pageImagesRef   = useRef<(string|undefined)[]>([]); // 전체 페이지 첨부 사진 배열 (ref → stale 방지)
 
   const initPT = editingNote?.paperType ?? (darkMode ? 'black' : 'white');
   const initPS = editingNote?.penSettings;
@@ -255,6 +259,7 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
   const [pdfText,       setPdfText]      = useState<string | undefined>(editingNote?.pdfText);
   const [pdfPageCount,  setPdfPageCount] = useState<number | undefined>(editingNote?.pdfPageCount);
   const [pdfRenderMsg,  setPdfRenderMsg] = useState<string | null>(null); // "3/40페이지 렌더링 중..."
+  const [pageImages,    setPageImages]   = useState<(string|undefined)[]>(editingNote?.pageImages ?? []);
 
   const swipeTouchRef  = useRef<{ id: number; startX: number; startY: number; startTime: number; classified: boolean; isSwipe: boolean } | null>(null);
   const addPageRef     = useRef<() => void>(() => {});
@@ -295,6 +300,7 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
   live.current.showLines          = showLines;
   live.current.lineSpacing        = lineSpacing;
   live.current.zoomEnabled        = zoomEnabled;
+  pageImagesRef.current           = pageImages; // stale closure 방지용 ref 동기화
 
   // ── Background ─────────────────────────────────────────────────────────
   const drawBackground = useCallback((ctx: CanvasRenderingContext2D, cssW: number, cssH: number) => {
@@ -319,6 +325,15 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
     const ctx  = canvas.getContext('2d')!;
     ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.restore();
     drawBackground(ctx, cssW, cssH);
+    // 첨부 사진 레이어 (종이색 위, PDF/스트로크 아래) — contain 방식
+    if (pageUserImgRef.current) {
+      const img = pageUserImgRef.current;
+      const scale = Math.min(cssW / img.naturalWidth, cssH / img.naturalHeight);
+      const iw = img.naturalWidth * scale, ih = img.naturalHeight * scale;
+      const ix = (cssW - iw) / 2, iy = (cssH - ih) / 2;
+      ctx.globalAlpha = 1;
+      ctx.drawImage(img, ix, iy, iw, ih);
+    }
     // PDF 페이지 배경 (종이색 위, 스트로크 아래)
     if (pageBgImageRef.current) {
       ctx.globalAlpha = 1;
@@ -517,6 +532,18 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
     live.current.penSize           = ps?.penSize ?? 2;
     live.current.penType           = ps?.penType ?? 'fountain';
     live.current.fountainIntensity = ps?.fountainIntensity ?? 1.0;
+
+    // 첨부 사진 복원
+    const imgs = editingNote?.pageImages ?? [];
+    setPageImages(imgs);
+    pageImagesRef.current = imgs;
+    // 0번 페이지 사진 로드
+    pageUserImgRef.current = null;
+    if (imgs[0]) {
+      const ui = new Image();
+      ui.onload = () => { pageUserImgRef.current = ui; redrawBase(); };
+      ui.src = imgs[0];
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingNote, darkMode]);
 
@@ -896,6 +923,44 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
     } catch { setOcrMsg('오류가 발생했습니다.'); setIsOcrLoading(false); return ''; }
   };
 
+  // ── 사진 첨부 ──────────────────────────────────────────────────────────────
+  const importImage = useCallback(async (file: File) => {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = e => resolve(e.target?.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    // 최대 1600px로 압축
+    const compressed = await compress(dataUrl, 1600, 0.88);
+    const idx = live.current.pageIdx;
+    // pageImages 배열 업데이트
+    setPageImages(prev => {
+      const next = [...prev];
+      while (next.length <= idx) next.push(undefined);
+      next[idx] = compressed;
+      pageImagesRef.current = next; // ref도 동기화
+      return next;
+    });
+    // 즉시 렌더
+    const ui = new Image();
+    ui.onload = () => { pageUserImgRef.current = ui; redrawBase(); };
+    ui.src = compressed;
+  }, [redrawBase]);
+
+  // 현재 페이지 사진 제거
+  const removePageImage = useCallback(() => {
+    const idx = live.current.pageIdx;
+    setPageImages(prev => {
+      const next = [...prev];
+      next[idx] = undefined;
+      pageImagesRef.current = next;
+      return next;
+    });
+    pageUserImgRef.current = null;
+    redrawBase();
+  }, [redrawBase]);
+
   // ── Save ─────────────────────────────────────────────────────────────────
   const handleSave = async () => {
     let rawUrl = getExportDataUrl();
@@ -931,12 +996,14 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
       penColor:         live.current.penColor,
       fountainIntensity:live.current.fountainIntensity,
     };
+    const currentPageImages = pageImagesRef.current;
     onSave(
       dataUrl, finalOcr, title, live.current.paperType,
       finalTags, noteFolderId,
       pdfBase64, pdfText, pdfPageCount,
       allPageStrokes.some(s => s.length > 0) ? allPageStrokes : undefined,
       currentPenSettings,
+      currentPageImages.some(Boolean) ? currentPageImages : undefined,
       editingNote?.id,
     );
   };
@@ -946,8 +1013,17 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
     setPageIdx(idx);
     strokesRef.current = pages[idx]?.strokes || [];
     baseImageRef.current = null;
+
+    // 해당 페이지 첨부 사진 로드
+    const userImgSrc = pageImagesRef.current[idx];
+    pageUserImgRef.current = null;
+    if (userImgSrc) {
+      const ui = new Image();
+      ui.onload = () => { pageUserImgRef.current = ui; redrawBase(); };
+      ui.src = userImgSrc;
+    }
+
     if (pdfDocRef.current) {
-      // PDF 노트: 페이지 렌더 (캐시 있으면 즉시)
       loadPageBg(idx);
     } else {
       pageBgImageRef.current = null;
@@ -960,6 +1036,7 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
     const updated = [...pages, newPg]; setPages(updated);
     const ni = updated.length - 1; setPageIdx(ni);
     strokesRef.current = []; baseImageRef.current = null;
+    pageUserImgRef.current = null; // 새 페이지는 사진 없음
     redrawBase(); clearActive();
   };
   addPageRef.current  = addPage;  // 스와이프 핸들러가 최신 addPage를 호출하도록
@@ -1386,6 +1463,25 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
           </button>
           <input ref={pdfInputRef} type="file" accept=".pdf" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) importPdf(f); e.target.value = ''; }}/>
+
+          {/* ── 사진 첨부 ── */}
+          <div className="flex items-center gap-0.5">
+            <button type="button"
+              onClick={() => imgInputRef.current?.click()}
+              className={`font-extrabold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1 cursor-pointer shadow-sm active:scale-95 ${pageImages[pageIdx] ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-teal-500 hover:bg-teal-600 text-white'} shrink-0`}>
+              <span className="text-sm leading-none">🖼️</span>
+              <span className="hidden sm:inline">{pageImages[pageIdx] ? '사진✓' : '사진'}</span>
+            </button>
+            {/* 현재 페이지 사진 제거 버튼 */}
+            {pageImages[pageIdx] && (
+              <button type="button" onClick={removePageImage}
+                className="p-1.5 bg-red-100 hover:bg-red-200 text-red-600 rounded-xl cursor-pointer shadow-sm active:scale-95 text-xs font-black shrink-0">
+                ✕
+              </button>
+            )}
+          </div>
+          <input ref={imgInputRef} type="file" accept="image/*" className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) importImage(f); e.target.value = ''; }}/>
 
           {/* ── 노트 정보 (태그/폴더) ── */}
           <button type="button"

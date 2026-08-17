@@ -252,52 +252,38 @@ jobs:
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release.jks
           echo "✅ Keystore decoded ($(wc -c < android/app/release.jks) bytes)"
 
-      - name: Inject signing config into app/build.gradle
+      - name: Build Debug APK
         run: |
-          python3 << 'PYEOF'
-          with open("android/app/build.gradle", "r") as f:
-              content = f.read()
+          cd android
+          ./gradlew assembleDebug --no-daemon
 
-          # signingConfigs 블록 추가 (buildTypes 바로 앞에)
-          signing_block = """
-              signingConfigs {
-                  release {
-                      storeFile file("release.jks")
-                      storePassword System.getenv("STORE_PASSWORD")
-                      keyAlias System.getenv("KEY_ALIAS")
-                      keyPassword System.getenv("KEY_PASSWORD")
-                  }
-              }
-          """
-          if "signingConfigs" not in content:
-              content = content.replace("    buildTypes {", signing_block + "    buildTypes {")
-
-          # release buildType에 signingConfig 적용
-          if "signingConfig signingConfigs.release" not in content:
-              content = content.replace(
-                  "        release {",
-                  "        release {\n            signingConfig signingConfigs.release"
-              )
-
-          with open("android/app/build.gradle", "w") as f:
-              f.write(content)
-          print("✅ Signing config injected")
-          PYEOF
-
-      - name: Build Release APK
+      - name: Re-sign APK with persistent keystore
         env:
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          cd android
-          ./gradlew assembleRelease --no-daemon
+          APKSIGNER=$(find $ANDROID_HOME/build-tools -name "apksigner" | sort -r | head -1)
+          echo "apksigner: $APKSIGNER"
+
+          INPUT="android/app/build/outputs/apk/debug/app-debug.apk"
+          OUTPUT="android/app/build/outputs/apk/debug/app-signed.apk"
+
+          $APKSIGNER sign \
+            --ks android/app/release.jks \
+            --ks-pass pass:$STORE_PASSWORD \
+            --ks-key-alias $KEY_ALIAS \
+            --key-pass pass:$KEY_PASSWORD \
+            --out $OUTPUT \
+            $INPUT
+
+          echo "✅ Re-signed: $(ls -lh $OUTPUT)"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: damoa-pen-release
-          path: android/app/build/outputs/apk/release/app-release.apk
+          path: android/app/build/outputs/apk/debug/app-signed.apk
           retention-days: 30
 
       - name: Build summary
@@ -306,4 +292,4 @@ jobs:
           echo "- 서명: 고정 keystore (패키지 충돌 없음)" >> $GITHUB_STEP_SUMMARY
           echo "- ML Kit Digital Ink Recognition (한글 필기 인식, 오프라인)" >> $GITHUB_STEP_SUMMARY
           echo "APK: **Actions → 이 실행 → Artifacts → damoa-pen-release**" >> $GITHUB_STEP_SUMMARY
-          ls -lh android/app/build/outputs/apk/release/ 2>/dev/null || echo "(파일 경로 확인 필요)"
+          ls -lh android/app/build/outputs/apk/debug/

@@ -1070,17 +1070,44 @@ export const PenCanvas: React.FC<Props> = ({
       console.error('[damoa-pen] compress 결과 비어있음, 저장 중단');
       return;
     }
-    let finalOcr = ocrText;
-    if (strokesRef.current.length > 0 && !ocrText) {
-      try { const t = await handleOcr(dataUrl); if (t) finalOcr = t; } catch {}
-    }
-    // 태그 파싱
-    const finalTags = tagsInput.split(',').map(t => t.trim()).filter(Boolean);
-    if (finalTags.length) setTags(finalTags);
     // 전체 페이지 스트로크 수집 (현재 페이지는 strokesRef로 최신화)
     const allPageStrokes = pages.map((p, i) =>
       i === live.current.pageIdx ? [...strokesRef.current] : p.strokes
     ) as SavedStroke[][];
+
+    // ── 전체 페이지 OCR (모든 페이지 스트로크를 순서대로 인식) ──
+    setIsOcrLoading(true);
+    setOcrMsg('📄 전체 페이지 인식 중...');
+    const { isNativeAndroid } = await import('../lib/mlkitOcr');
+    const useInk = isNativeAndroid();
+    const { runInkOcr } = useInk ? await import('../lib/inkOcr') : { runInkOcr: null as any };
+
+    const pageOcrTexts: string[] = [];
+    for (let pi = 0; pi < allPageStrokes.length; pi++) {
+      const pgStrokes = allPageStrokes[pi];
+      const existingText = editingNote?.pageOcrTexts?.[pi] ?? '';
+      // 현재 페이지: 항상 재인식. 다른 페이지: 스트로크 있으면 인식, 없으면 기존 텍스트 유지
+      const shouldRecognize = pgStrokes.length > 0 && (pi === live.current.pageIdx || !existingText);
+      if (!shouldRecognize) { pageOcrTexts.push(existingText); continue; }
+      try {
+        if (useInk && runInkOcr) {
+          setOcrMsg(`📄 페이지 ${pi + 1}/${allPageStrokes.length} 인식 중...`);
+          const t = await runInkOcr(pgStrokes);
+          pageOcrTexts.push(t || existingText);
+        } else {
+          pageOcrTexts.push(existingText);
+        }
+      } catch { pageOcrTexts.push(existingText); }
+    }
+    setIsOcrLoading(false); setOcrMsg(null);
+
+    // 전체 OCR 텍스트 = 페이지별 합산 (검색용)
+    const finalOcr = pageOcrTexts.filter(Boolean).join(' ');
+    setOcrText(finalOcr);
+
+    // 태그 파싱
+    const finalTags = tagsInput.split(',').map(t => t.trim()).filter(Boolean);
+    if (finalTags.length) setTags(finalTags);
     // 현재 펜 설정 수집
     const currentPenSettings: PenSettings = {
       penType:          live.current.penType,
@@ -1089,10 +1116,6 @@ export const PenCanvas: React.FC<Props> = ({
       fountainIntensity:live.current.fountainIntensity,
     };
     const currentPageImages = pageImagesRef.current;
-    // 페이지별 OCR 텍스트 수집 (현재 페이지는 finalOcr 사용)
-    const currentPageOcrTexts: string[] = pages.map((_, i) =>
-      i === live.current.pageIdx ? finalOcr : (editingNote?.pageOcrTexts?.[i] ?? '')
-    );
     onSave(
       dataUrl, finalOcr, title, live.current.paperType,
       finalTags, noteFolderId,
@@ -1101,7 +1124,7 @@ export const PenCanvas: React.FC<Props> = ({
       currentPenSettings,
       currentPageImages.some(Boolean) ? currentPageImages : undefined,
       editingNote?.id,
-      currentPageOcrTexts.some(Boolean) ? currentPageOcrTexts : undefined,
+      pageOcrTexts.some(Boolean) ? pageOcrTexts : undefined,
     );
   };
 

@@ -10,6 +10,7 @@ import { LockScreen, LOCK_KEY } from './components/LockScreen';
 type View = 'list' | 'canvas';
 
 const FOLDER_COLORS = ['#8b5cf6','#ef4444','#f97316','#eab308','#22c55e','#06b6d4','#2563eb','#ec4899'];
+const TAB_PALETTE   = ['#8b5cf6','#22c55e','#3b82f6','#f97316','#ec4899','#14b8a6'];
 
 export default function App() {
   const [notes,       setNotes]       = useState<PenNote[]>([]);
@@ -17,6 +18,10 @@ export default function App() {
   const [view,        setView]        = useState<View>('list');
   const [editingNote, setEditingNote] = useState<PenNote | null>(null);
   const [showSettings,setShowSettings]= useState(false);
+
+  // ── 탭 시스템 ────────────────────────────────────────────────────────────
+  const [openTabs,    setOpenTabs]    = useState<Array<{noteId:string|null; title:string; color:string}>>([]);
+  const [activeTabIdx,setActiveTabIdx]= useState(0);
   const [isLocked,    setIsLocked]    = useState(() => localStorage.getItem(LOCK_KEY) === 'true');
   const [darkMode,    setDarkMode]    = useState(() => {
     const stored = localStorage.getItem('damoa_pen_dark');
@@ -66,8 +71,30 @@ export default function App() {
   }, [notes]);
 
   // ── CRUD ──────────────────────────────────────────────────────────────────
-  const handleNew = () => { setEditingNote(null); setView('canvas'); };
-  const handleEdit = (note: PenNote) => { setEditingNote(note); setView('canvas'); };
+  const handleNew = () => {
+    const color = TAB_PALETTE[openTabs.length % TAB_PALETTE.length];
+    const newIdx = openTabs.length;
+    setOpenTabs(prev => [...prev, { noteId: null, title: '새 노트', color }]);
+    setActiveTabIdx(newIdx);
+    setEditingNote(null);
+    setView('canvas');
+  };
+
+  const handleEdit = (note: PenNote) => {
+    const existingIdx = openTabs.findIndex(t => t.noteId === note.id);
+    if (existingIdx >= 0) {
+      setActiveTabIdx(existingIdx);
+      setEditingNote(note);
+      setView('canvas');
+      return;
+    }
+    const color = TAB_PALETTE[openTabs.length % TAB_PALETTE.length];
+    const newIdx = openTabs.length;
+    setOpenTabs(prev => [...prev, { noteId: note.id, title: note.title, color }]);
+    setActiveTabIdx(newIdx);
+    setEditingNote(note);
+    setView('canvas');
+  };
 
   const handleSave = async (
     dataUrl: string,
@@ -85,8 +112,9 @@ export default function App() {
     id?: string,
   ) => {
     const now = Date.now();
+    const noteId = id || `note-${now}-${Math.random().toString(36).slice(2)}`;
     const note: PenNote = {
-      id: id || `note-${now}-${Math.random().toString(36).slice(2)}`,
+      id: noteId,
       title: title || `손글씨 노트 ${new Date(now).toLocaleDateString('ko-KR')}`,
       dataUrl,
       ocrText,
@@ -105,8 +133,11 @@ export default function App() {
     };
     await saveNote(note);
     await loadNotes();
-    setView('list');
-    setEditingNote(null);
+    // 탭 시스템: 목록으로 돌아가지 않고 캔버스 유지
+    setEditingNote(note);
+    setOpenTabs(prev => prev.map((t, i) =>
+      i === activeTabIdx ? { ...t, noteId: noteId, title: note.title } : t
+    ));
   };
 
   const handleDelete = async (noteId: string) => {
@@ -124,7 +155,44 @@ export default function App() {
     await loadNotes();
   };
 
-  const handleBack = () => { setView('list'); setEditingNote(null); };
+  const handleBack = () => { setView('list'); setEditingNote(null); setOpenTabs([]); setActiveTabIdx(0); };
+
+  // ── 탭 핸들러 ─────────────────────────────────────────────────────────────
+  const handleTabSwitch = (idx: number) => {
+    setActiveTabIdx(idx);
+    const tab = openTabs[idx];
+    if (tab?.noteId) {
+      setEditingNote(notes.find(n => n.id === tab.noteId) ?? null);
+    } else {
+      setEditingNote(null);
+    }
+  };
+
+  const handleTabClose = (idx: number) => {
+    const newTabs = openTabs.filter((_, i) => i !== idx);
+    if (newTabs.length === 0) {
+      setOpenTabs([]);
+      setView('list');
+      setEditingNote(null);
+      setActiveTabIdx(0);
+      return;
+    }
+    const newIdx = idx >= newTabs.length ? newTabs.length - 1 : idx;
+    setOpenTabs(newTabs);
+    setActiveTabIdx(newIdx);
+    const newTab = newTabs[newIdx];
+    setEditingNote(newTab.noteId ? (notes.find(n => n.id === newTab.noteId) ?? null) : null);
+  };
+
+  const handleTabColorCycle = (idx: number) => {
+    setOpenTabs(prev => prev.map((t, i) => {
+      if (i !== idx) return t;
+      const ci = TAB_PALETTE.indexOf(t.color);
+      return { ...t, color: TAB_PALETTE[(ci + 1) % TAB_PALETTE.length] };
+    }));
+  };
+
+  const handleNewTab = () => handleNew();
 
   // ── 폴더 CRUD ─────────────────────────────────────────────────────────────
   const handleAddFolder = async () => {
@@ -291,6 +359,12 @@ export default function App() {
             folders={folders}
             onSave={handleSave}
             onBack={handleBack}
+            openTabs={openTabs}
+            activeTabIdx={activeTabIdx}
+            onTabSwitch={handleTabSwitch}
+            onTabClose={handleTabClose}
+            onTabColorCycle={handleTabColorCycle}
+            onNewTab={handleNewTab}
           />
         )}
       </div>

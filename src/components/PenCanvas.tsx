@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Eraser, Trash2, Check, Sparkles,
   Hand, ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
-  FileText, FolderOpen, Tag,
+  FileText, FolderOpen, Tag, Lock, Unlock, Settings, X, Plus,
 } from 'lucide-react';
 import { PenNote, Folder, PenType, StrokePoint, SavedStroke, PenSettings } from '../types';
 
@@ -33,6 +33,13 @@ interface Props {
     id?: string,
   ) => void;
   onBack: () => void;
+  // Tab system
+  openTabs?: Array<{ noteId: string | null; title: string; color: string }>;
+  activeTabIdx?: number;
+  onTabSwitch?: (newIdx: number) => void;
+  onTabClose?: (idx: number) => void;
+  onTabColorCycle?: (idx: number) => void;
+  onNewTab?: () => void;
 }
 
 // 페이지 데이터 (bgImageUrl 제거 — PDF는 pdfDocRef + 메모리 캐시로 처리)
@@ -203,7 +210,11 @@ function appendSegment(
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
-export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = [], onSave, onBack }) => {
+export const PenCanvas: React.FC<Props> = ({
+  editingNote, darkMode, folders = [], onSave, onBack,
+  openTabs, activeTabIdx: activeTabIdxProp = 0,
+  onTabSwitch, onTabClose, onTabColorCycle, onNewTab,
+}) => {
   const baseCanvasRef   = useRef<HTMLCanvasElement | null>(null);
   const activeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef    = useRef<HTMLDivElement | null>(null);
@@ -269,7 +280,9 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
   const pinchRef       = useRef<{ t1Id: number; t2Id: number; startDist: number; startScale: number; midCanvasX: number; midCanvasY: number } | null>(null);
   const canvasXformRef = useRef({ scale: 1, x: 0, y: 0 });
 
-  const [zoomEnabled, setZoomEnabled] = useState(false);
+  const [zoomEnabled,      setZoomEnabled]      = useState(false);
+  const [zoomLocked,       setZoomLocked]       = useState(false);
+  const [showSettingsPanel,setShowSettingsPanel] = useState(false);
   const [canvasXform, setCanvasXform] = useState({ scale: 1, x: 0, y: 0 });
 
   const colorPickerRef = useRef<HTMLDivElement | null>(null);
@@ -1115,6 +1128,39 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
   return (
     <div className="w-full flex flex-col h-dvh overflow-hidden" style={{paddingBottom:'env(safe-area-inset-bottom,0)'}}>
 
+      {/* ── 탭 바 ── */}
+      {openTabs && openTabs.length > 0 && (
+        <div className="flex items-center bg-stone-200 dark:bg-slate-900 border-b border-stone-300 dark:border-slate-700 overflow-x-auto"
+          style={{touchAction:'auto', scrollbarWidth:'none', WebkitOverflowScrolling:'touch'}}>
+          {openTabs.map((tab, i) => (
+            <div key={i}
+              className={`flex items-center gap-1 px-2 py-1.5 text-xs font-bold cursor-pointer shrink-0 border-b-2 transition-colors ${i === activeTabIdxProp ? 'bg-stone-100 dark:bg-slate-800 border-purple-500 text-stone-900 dark:text-white' : 'border-transparent text-stone-500 dark:text-slate-400 hover:bg-stone-150 dark:hover:bg-slate-800/60'}`}
+              onClick={() => onTabSwitch?.(i)}>
+              {/* 탭 색상 점 (클릭으로 색상 순환) */}
+              <span
+                className="w-2.5 h-2.5 rounded-full shrink-0 cursor-pointer ring-1 ring-white/40"
+                style={{background: tab.color}}
+                onClick={e => { e.stopPropagation(); onTabColorCycle?.(i); }}
+              />
+              {/* 탭 제목 */}
+              <span className="max-w-[80px] truncate">{tab.title}</span>
+              {/* 닫기 버튼 */}
+              <button type="button"
+                className="ml-0.5 rounded-full text-stone-400 hover:text-red-400 dark:hover:text-red-400 cursor-pointer"
+                onClick={e => { e.stopPropagation(); onTabClose?.(i); }}>
+                <X className="w-3 h-3"/>
+              </button>
+            </div>
+          ))}
+          {/* 새 탭 버튼 */}
+          <button type="button" title="새 노트 탭"
+            onClick={onNewTab}
+            className="flex items-center justify-center px-2 py-1.5 text-stone-400 dark:text-slate-500 hover:text-purple-600 dark:hover:text-purple-400 cursor-pointer shrink-0">
+            <Plus className="w-3.5 h-3.5"/>
+          </button>
+        </div>
+      )}
+
       {/* ── Toolbar ── */}
       {/* touch-action:auto so stylus can tap inputs on tablet */}
       <div className="bg-stone-100 dark:bg-slate-800 px-2 py-1.5 border-b border-stone-200 dark:border-slate-700 shadow-sm relative z-30 space-y-1.5"
@@ -1155,7 +1201,7 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
           </div>
 
           <button type="button" onClick={() => setToolbarCollapsed(!toolbarCollapsed)}
-            className="sm:hidden flex items-center gap-1 px-2 py-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-xl text-xs font-black cursor-pointer text-stone-700">
+            className="flex items-center gap-1 px-2 py-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-xl text-xs font-black cursor-pointer text-stone-700 dark:text-slate-200">
             {toolbarCollapsed ? <ChevronDown className="w-3.5 h-3.5"/> : <ChevronUp className="w-3.5 h-3.5"/>}
           </button>
 
@@ -1165,17 +1211,16 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
           </button>
         </div>
 
-        {/* Row 2: pen tools */}
-        <div className={`${toolbarCollapsed?'hidden':'flex'} sm:flex items-center gap-1.5 flex-wrap`}>
+        {/* Row 2: pen tools (icon-only) */}
+        <div className={`${toolbarCollapsed?'hidden':'flex'} items-center gap-1 flex-wrap`}>
 
           {/* ── Pen type selector ── */}
           <div className="relative">
-            <button type="button"
-              onClick={() => { setShowPenMenu(!showPenMenu); setShowColorPicker(false); setShowSizePicker(false); setShowEraserMenu(false); setShowPaperMenu(false); }}
-              className={`border font-extrabold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-sm ${isEraser?'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-200':'bg-purple-600 border-purple-700 text-white'}`}>
+            <button type="button" title={PEN_LABELS[penType]}
+              onClick={() => { setShowPenMenu(!showPenMenu); setShowColorPicker(false); setShowSizePicker(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
+              className={`border font-extrabold text-sm px-2 py-1.5 rounded-xl flex items-center gap-0.5 cursor-pointer shadow-sm ${isEraser?'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-200':'bg-purple-600 border-purple-700 text-white'}`}>
               <span>{PEN_ICONS[penType]}</span>
-              <span className="hidden sm:inline">{PEN_LABELS[penType]}</span>
-              <span className="text-[10px] opacity-70">▼</span>
+              <span className="text-[9px] opacity-60">▾</span>
             </button>
             {showPenMenu && (
               <div ref={penMenuRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-1.5 shadow-xl z-50 min-w-[160px] flex flex-col gap-1">
@@ -1207,13 +1252,12 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
 
           {/* ── Color picker ── */}
           <div className="relative">
-            <button type="button"
-              onClick={() => { setShowColorPicker(!showColorPicker); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); }}
-              className="bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 font-extrabold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-sm hover:bg-stone-50 text-stone-800 dark:text-slate-200">
-              <span className="w-3.5 h-3.5 rounded-full border border-stone-300 shrink-0"
+            <button type="button" title="색상"
+              onClick={() => { setShowColorPicker(!showColorPicker); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
+              className="bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 px-2 py-1.5 rounded-xl flex items-center gap-0.5 cursor-pointer shadow-sm hover:bg-stone-50">
+              <span className="w-4 h-4 rounded-full border border-stone-300 shrink-0"
                 style={{backgroundColor: isEraser ? '#9ca3af' : penColor, opacity: isHL ? 0.5 : 1}}/>
-              <span className="hidden sm:inline text-[11px]">색상</span>
-              <span className="text-[10px] text-stone-400">▼</span>
+              <span className="text-[9px] text-stone-400">▾</span>
             </button>
             {showColorPicker && (
               <div ref={colorPickerRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-2.5 shadow-xl z-50" style={{minWidth:200}}>
@@ -1236,14 +1280,13 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
 
           {/* ── Size picker ── */}
           <div className="relative">
-            <button type="button"
-              onClick={() => { setShowSizePicker(!showSizePicker); setShowColorPicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); }}
-              className="bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 font-extrabold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-sm hover:bg-stone-50 text-stone-800 dark:text-slate-200">
-              <span className="flex items-center justify-center w-5 h-5">
-                <span className="rounded-full bg-current" style={{width:Math.max(3,Math.min(14,penSize))+'px',height:Math.max(3,Math.min(14,penSize))+'px'}}/>
+            <button type="button" title={`굵기 ${penSize.toFixed(1)}px`}
+              onClick={() => { setShowSizePicker(!showSizePicker); setShowColorPicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
+              className="bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 px-2 py-1.5 rounded-xl flex items-center gap-0.5 cursor-pointer shadow-sm hover:bg-stone-50 text-stone-800 dark:text-slate-200">
+              <span className="flex items-center justify-center w-4 h-4">
+                <span className="rounded-full bg-current" style={{width:Math.max(3,Math.min(12,penSize))+'px',height:Math.max(3,Math.min(12,penSize))+'px'}}/>
               </span>
-              <span className="text-[11px]">{penSize.toFixed(1)}px</span>
-              <span className="text-[10px] text-stone-400">▼</span>
+              <span className="text-[9px] text-stone-400">▾</span>
             </button>
             {showSizePicker && (
               <div ref={sizePickerRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-3 shadow-xl z-50" style={{minWidth:220}}>
@@ -1342,14 +1385,14 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
           {/* ── Eraser ── */}
           <div className="relative flex items-center">
             <div className={`flex items-center rounded-xl border overflow-hidden shadow-sm ${isEraser?'bg-purple-600 text-white border-purple-700':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-800 dark:text-slate-200'}`}>
-              <button type="button" onClick={() => { setIsEraser(!isEraser); setShowEraserMenu(false); }}
-                className="px-2.5 py-1.5 font-extrabold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95">
-                <Eraser className="w-3.5 h-3.5"/>
-                <span>{isEraser?(eraserType==='stroke'?'획지우개':'부분지우개'):'지우개'}</span>
+              <button type="button" title={isEraser?(eraserType==='stroke'?'획지우개':'부분지우개'):'지우개'}
+                onClick={() => { setIsEraser(!isEraser); setShowEraserMenu(false); }}
+                className="px-2 py-1.5 font-extrabold text-xs flex items-center gap-1 cursor-pointer active:scale-95">
+                <Eraser className="w-4 h-4"/>
               </button>
               <button type="button"
-                onClick={() => { setShowEraserMenu(!showEraserMenu); setShowColorPicker(false); setShowSizePicker(false); setShowPenMenu(false); setShowPaperMenu(false); }}
-                className={`px-1.5 py-1.5 border-l text-[10px] cursor-pointer hover:bg-black/10 ${isEraser?'border-purple-500':'border-stone-200 dark:border-slate-700 text-stone-500'}`}>▼</button>
+                onClick={() => { setShowEraserMenu(!showEraserMenu); setShowColorPicker(false); setShowSizePicker(false); setShowPenMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
+                className={`px-1 py-1.5 border-l text-[9px] cursor-pointer hover:bg-black/10 ${isEraser?'border-purple-500':'border-stone-200 dark:border-slate-700 text-stone-500'}`}>▾</button>
             </div>
             {showEraserMenu && (
               <div ref={eraserMenuRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-1.5 shadow-xl z-50 min-w-[180px] flex flex-col gap-1">
@@ -1375,62 +1418,27 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
             )}
           </div>
 
-          {/* ── Paper ── */}
-          <div className="relative">
-            <button type="button"
-              onClick={() => { setShowPaperMenu(!showPaperMenu); setShowColorPicker(false); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); }}
-              className="bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 font-extrabold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-sm hover:bg-stone-50 text-stone-800 dark:text-slate-200">
-              <span>{paperType==='black'?'🖤':paperType==='yellow'?'📒':'📄'}</span>
-              <span className="hidden sm:inline text-[11px]">종이</span>
-              <span className="text-[10px] text-stone-400">▼</span>
-            </button>
-            {showPaperMenu && (
-              <div ref={paperMenuRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-2 shadow-xl z-50 min-w-[180px] flex flex-col gap-1.5">
-                <div className="flex gap-1.5">
-                  {(['white','yellow','black'] as const).map(pt => (
-                    <button key={pt} type="button" onClick={() => {
-                      setPaperType(pt); live.current.paperType = pt;
-                      if (pt==='black'&&penColor==='#1c1917') setPenColor('#ffffff');
-                      if (pt!=='black'&&penColor==='#ffffff') setPenColor('#1c1917');
-                    }}
-                      className={`flex-1 py-2 rounded-xl text-xs font-black border-2 cursor-pointer ${paperType===pt?'border-purple-500 ring-2 ring-purple-200':'border-stone-200 dark:border-slate-600'}`}
-                      style={{backgroundColor:pt==='black'?'#1a1a1a':pt==='yellow'?'#fef9c3':'#ffffff',color:pt==='black'?'#fff':'#333'}}>
-                      {pt==='white'?'흰색':pt==='yellow'?'노랑':'검정'}
-                    </button>
-                  ))}
-                </div>
-                <div className="h-px bg-stone-100 dark:bg-slate-700"/>
-                <button type="button" onClick={() => setShowLines(!showLines)}
-                  className="px-3 py-1.5 rounded-xl text-xs font-black text-left flex items-center justify-between text-stone-700 dark:text-slate-300 hover:bg-stone-100 cursor-pointer">
-                  <span>줄 표시</span>
-                  <span className={`font-black ${showLines?'text-purple-600':'text-stone-400'}`}>{showLines?'ON':'OFF'}</span>
-                </button>
-                {showLines && (
-                  <div className="flex gap-1 px-1">
-                    {[24,30,36,44].map(sp => (
-                      <button key={sp} type="button" onClick={() => setLineSpacing(sp)}
-                        className={`flex-1 py-1 rounded-lg text-[10px] font-black cursor-pointer ${lineSpacing===sp?'bg-purple-600 text-white':'bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-slate-300'}`}>
-                        {sp}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          {/* ── 종이 설정 (Settings 패널 토글) ── */}
+          <button type="button" title="종이 설정"
+            onClick={() => { setShowSettingsPanel(!showSettingsPanel); setShowColorPicker(false); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); }}
+            className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-black border cursor-pointer shadow-sm ${showSettingsPanel?'bg-stone-700 dark:bg-slate-600 text-white border-stone-700':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-200'}`}>
+            <span>{paperType==='black'?'🖤':paperType==='yellow'?'📒':'📄'}</span>
+            <Settings className="w-3.5 h-3.5"/>
+          </button>
 
           {/* ── Palm rejection ── */}
-          <button type="button" onClick={() => setPenOnlyMode(!penOnlyMode)}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${penOnlyMode?'bg-purple-100 dark:bg-purple-950/60 border-purple-300 text-purple-900 ring-2 ring-purple-200/80':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-300'}`}>
-            <Hand className="w-3.5 h-3.5 text-purple-600"/>
-            <span className="hidden sm:inline">{penOnlyMode?'펜전용':'터치/펜'}</span>
+          <button type="button" title={penOnlyMode ? '펜 전용 (터치 차단)' : '터치+펜 허용'}
+            onClick={() => setPenOnlyMode(!penOnlyMode)}
+            className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${penOnlyMode?'bg-purple-100 dark:bg-purple-950/60 border-purple-300 text-purple-900 ring-2 ring-purple-200/80':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-300'}`}>
+            <Hand className="w-4 h-4 text-purple-600"/>
           </button>
 
           {/* ── 핀치 줌 ── */}
-          <button type="button"
+          {/* ── 핀치 줌 ── */}
+          <button type="button" title={zoomEnabled ? `줌 ${Math.round(canvasXform.scale*100)}%` : '줌'}
             onClick={() => {
-              if (zoomEnabled) {
-                // 줌 끄면 1:1 리셋
+              if (zoomEnabled && !zoomLocked) {
+                // 잠금 아닐 때만 리셋
                 const id = { scale: 1, x: 0, y: 0 };
                 canvasXformRef.current = id;
                 setCanvasXform(id);
@@ -1440,43 +1448,59 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
             }}
             className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${zoomEnabled?'bg-blue-100 dark:bg-blue-950/60 border-blue-300 text-blue-900 dark:text-blue-100 ring-2 ring-blue-200/80':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-300'}`}>
             <span className="text-sm leading-none">🔍</span>
-            <span className="hidden sm:inline">
-              {zoomEnabled
-                ? (canvasXform.scale !== 1 ? `${Math.round(canvasXform.scale * 100)}%` : '줌ON')
-                : '줌'}
-            </span>
+            {canvasXform.scale !== 1 && (
+              <span className="text-[10px] font-black">{Math.round(canvasXform.scale*100)}%</span>
+            )}
           </button>
 
+          {/* ── 줌 잠금 ── */}
+          {(zoomEnabled || zoomLocked) && (
+            <button type="button" title={zoomLocked ? '줌 잠금 해제 (리셋)' : '현재 배율 고정'}
+              onClick={() => {
+                if (zoomLocked) {
+                  // 잠금 해제 + 리셋
+                  setZoomLocked(false);
+                  const id = { scale: 1, x: 0, y: 0 };
+                  canvasXformRef.current = id;
+                  setCanvasXform(id);
+                  cachedRectRef.current = null;
+                } else {
+                  setZoomLocked(true);
+                }
+              }}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${zoomLocked?'bg-amber-100 dark:bg-amber-950/60 border-amber-400 text-amber-800 dark:text-amber-200 ring-2 ring-amber-200':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-600 dark:text-slate-400'}`}>
+              {zoomLocked ? <Lock className="w-3.5 h-3.5"/> : <Unlock className="w-3.5 h-3.5"/>}
+            </button>
+          )}
+
           {/* ── OCR ── */}
-          <button type="button" disabled={isOcrLoading} onClick={() => handleOcr()}
-            className={`font-extrabold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1 cursor-pointer shadow-sm active:scale-95 disabled:opacity-50 text-white shrink-0 ${isOcrLoading?'bg-purple-500':ocrText?'bg-blue-500 hover:bg-blue-600':'bg-red-500 hover:bg-red-600 animate-pulse'}`}>
-            <Sparkles className="w-3.5 h-3.5"/>
-            <span>{isOcrLoading?'판독중':ocrText?'AI완료':'AI인식'}</span>
+          <button type="button" title={isOcrLoading ? '판독 중...' : ocrText ? 'AI 완료' : 'AI 인식'}
+            disabled={isOcrLoading} onClick={() => handleOcr()}
+            className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shadow-sm active:scale-95 disabled:opacity-50 text-white shrink-0 ${isOcrLoading?'bg-purple-500':ocrText?'bg-blue-500 hover:bg-blue-600':'bg-red-500 hover:bg-red-600 animate-pulse'}`}>
+            <Sparkles className="w-4 h-4"/>
           </button>
 
           {/* ── PDF 임포트 ── */}
-          <button type="button" disabled={loadingPdf}
+          <button type="button" title={loadingPdf ? 'PDF 로딩...' : pdfBase64 ? 'PDF 첨부됨' : 'PDF 첨부'}
+            disabled={loadingPdf}
             onClick={() => pdfInputRef.current?.click()}
-            className="font-extrabold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1 cursor-pointer shadow-sm bg-amber-500 hover:bg-amber-600 text-white shrink-0 disabled:opacity-50 active:scale-95">
-            <FileText className="w-3.5 h-3.5"/>
-            <span className="hidden sm:inline">{loadingPdf ? 'PDF 로딩...' : pdfBase64 ? 'PDF✓' : 'PDF'}</span>
+            className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shadow-sm text-white shrink-0 disabled:opacity-50 active:scale-95 ${pdfBase64 ? 'bg-amber-600 hover:bg-amber-700 ring-2 ring-amber-300' : 'bg-amber-500 hover:bg-amber-600'}`}>
+            <FileText className="w-4 h-4"/>
           </button>
           <input ref={pdfInputRef} type="file" accept=".pdf" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) importPdf(f); e.target.value = ''; }}/>
 
           {/* ── 사진 첨부 ── */}
           <div className="flex items-center gap-0.5">
-            <button type="button"
+            <button type="button" title={pageImages[pageIdx] ? '사진 첨부됨' : '사진 첨부'}
               onClick={() => imgInputRef.current?.click()}
-              className={`font-extrabold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1 cursor-pointer shadow-sm active:scale-95 ${pageImages[pageIdx] ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-teal-500 hover:bg-teal-600 text-white'} shrink-0`}>
+              className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shadow-sm active:scale-95 text-white shrink-0 ${pageImages[pageIdx] ? 'bg-green-600 hover:bg-green-700 ring-2 ring-green-300' : 'bg-teal-500 hover:bg-teal-600'}`}>
               <span className="text-sm leading-none">🖼️</span>
-              <span className="hidden sm:inline">{pageImages[pageIdx] ? '사진✓' : '사진'}</span>
             </button>
-            {/* 현재 페이지 사진 제거 버튼 */}
             {pageImages[pageIdx] && (
-              <button type="button" onClick={removePageImage}
-                className="p-1.5 bg-red-100 hover:bg-red-200 text-red-600 rounded-xl cursor-pointer shadow-sm active:scale-95 text-xs font-black shrink-0">
-                ✕
+              <button type="button" title="사진 제거" onClick={removePageImage}
+                className="p-1.5 bg-red-100 hover:bg-red-200 text-red-600 rounded-xl cursor-pointer shadow-sm active:scale-95 shrink-0">
+                <X className="w-3.5 h-3.5"/>
               </button>
             )}
           </div>
@@ -1484,13 +1508,56 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
             onChange={e => { const f = e.target.files?.[0]; if (f) importImage(f); e.target.value = ''; }}/>
 
           {/* ── 노트 정보 (태그/폴더) ── */}
-          <button type="button"
+          <button type="button" title="태그/폴더"
             onClick={() => setShowNoteInfo(!showNoteInfo)}
-            className={`font-extrabold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1 cursor-pointer shadow-sm shrink-0 ${showNoteInfo?'bg-purple-600 text-white':'bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-300'}`}>
-            <Tag className="w-3.5 h-3.5"/>
-            <span className="hidden sm:inline">정보</span>
+            className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shadow-sm shrink-0 ${showNoteInfo?'bg-purple-600 text-white':'bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-300'}`}>
+            <Tag className="w-4 h-4"/>
           </button>
         </div>
+
+        {/* Row 2.5: 종이 설정 패널 */}
+        {showSettingsPanel && (
+          <div className="mt-1 border-t border-stone-200 dark:border-slate-700 pt-2 flex flex-col gap-2.5">
+            {/* 종이 색상 */}
+            <div>
+              <div className="text-[10px] font-black text-stone-400 dark:text-slate-500 mb-1.5 uppercase tracking-wider">종이 색상</div>
+              <div className="flex gap-1.5">
+                {(['white','yellow','black'] as const).map(pt => (
+                  <button key={pt} type="button"
+                    onClick={() => {
+                      setPaperType(pt); live.current.paperType = pt;
+                      if (pt==='black'&&penColor==='#1c1917') setPenColor('#ffffff');
+                      if (pt!=='black'&&penColor==='#ffffff') setPenColor('#1c1917');
+                    }}
+                    className={`flex-1 py-2 rounded-xl text-xs font-black border-2 cursor-pointer ${paperType===pt?'border-purple-500 ring-2 ring-purple-200':'border-stone-200 dark:border-slate-600'}`}
+                    style={{backgroundColor:pt==='black'?'#1a1a1a':pt==='yellow'?'#fef9c3':'#ffffff',color:pt==='black'?'#fff':'#333'}}>
+                    {pt==='white'?'흰색':pt==='yellow'?'노랑':'검정'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* 줄 표시 */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="text-[10px] font-black text-stone-400 dark:text-slate-500 uppercase tracking-wider">줄 표시</div>
+                <button type="button" onClick={() => setShowLines(!showLines)}
+                  className={`px-2.5 py-0.5 rounded-full text-[10px] font-black cursor-pointer ${showLines?'bg-purple-600 text-white':'bg-stone-200 dark:bg-slate-700 text-stone-600 dark:text-slate-300'}`}>
+                  {showLines?'ON':'OFF'}
+                </button>
+              </div>
+              {showLines && (
+                <div className="flex gap-1">
+                  {[24,30,36,44].map(sp => (
+                    <button key={sp} type="button" onClick={() => setLineSpacing(sp)}
+                      className={`flex-1 py-1 rounded-lg text-[10px] font-black cursor-pointer ${lineSpacing===sp?'bg-purple-600 text-white':'bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-slate-300'}`}>
+                      {sp}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Row 3: 태그 / 폴더 (토글) */}
         {showNoteInfo && (

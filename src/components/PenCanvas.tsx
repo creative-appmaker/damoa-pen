@@ -4,7 +4,7 @@ import {
   Hand, ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
   FileText, FolderOpen, Tag,
 } from 'lucide-react';
-import { PenNote, Folder, PenType, StrokePoint, SavedStroke } from '../types';
+import { PenNote, Folder, PenType, StrokePoint, SavedStroke, PenSettings } from '../types';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 type Point = StrokePoint; // StrokePoint와 동일, 로컬 별칭
@@ -28,6 +28,7 @@ interface Props {
     tags: string[], folderId?: string,
     pdfBase64?: string, pdfText?: string, pdfPageCount?: number,
     pageStrokes?: SavedStroke[][],
+    penSettings?: PenSettings,
     id?: string,
   ) => void;
   onBack: () => void;
@@ -217,14 +218,15 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
   const pdfCacheRef     = useRef<Map<number, string>>(new Map()); // 인메모리 JPEG 캐시 (pageIdx → dataUrl)
 
   const initPT = editingNote?.paperType ?? (darkMode ? 'black' : 'white');
+  const initPS = editingNote?.penSettings;
 
   const [title,             setTitle]             = useState(editingNote?.title ?? '');
   const [paperType,         setPaperType]         = useState<'white'|'yellow'|'black'>(initPT);
-  const [penColor,          setPenColor]          = useState(initPT === 'black' ? '#ffffff' : '#1c1917');
-  const [penSize,           setPenSize]           = useState(2);
-  const [penSizeInput,      setPenSizeInput]      = useState('2.0'); // 직접 입력용 문자열
-  const [penType,           setPenType]           = useState<PenType>('pen');
-  const [fountainIntensity, setFountainIntensity] = useState(1.2);
+  const [penColor,          setPenColor]          = useState(initPS?.penColor ?? (initPT === 'black' ? '#ffffff' : '#1c1917'));
+  const [penSize,           setPenSize]           = useState(initPS?.penSize ?? 2);
+  const [penSizeInput,      setPenSizeInput]      = useState((initPS?.penSize ?? 2).toFixed(1)); // 직접 입력용 문자열
+  const [penType,           setPenType]           = useState<PenType>(editingNote?.penSettings?.penType ?? 'fountain');
+  const [fountainIntensity, setFountainIntensity] = useState(editingNote?.penSettings?.fountainIntensity ?? 1.0);
   const [isEraser,          setIsEraser]          = useState(false);
   const [eraserType,        setEraserType]        = useState<'stroke'|'area'>('stroke');
   const [autoReturnPen,     setAutoReturnPen]     = useState(true);
@@ -254,8 +256,16 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
   const [pdfPageCount,  setPdfPageCount] = useState<number | undefined>(editingNote?.pdfPageCount);
   const [pdfRenderMsg,  setPdfRenderMsg] = useState<string | null>(null); // "3/40페이지 렌더링 중..."
 
-  const swipeTouchRef  = useRef<{ id: number; startX: number; startY: number; classified: boolean; isSwipe: boolean } | null>(null);
+  const swipeTouchRef  = useRef<{ id: number; startX: number; startY: number; startTime: number; classified: boolean; isSwipe: boolean } | null>(null);
   const addPageRef     = useRef<() => void>(() => {});
+  const goToPageRef    = useRef<(idx: number) => void>(() => {});
+  const pagesLenRef    = useRef<number>(1);
+  const canvasWrapRef  = useRef<HTMLDivElement | null>(null);
+  const pinchRef       = useRef<{ t1Id: number; t2Id: number; startDist: number; startScale: number; midCanvasX: number; midCanvasY: number } | null>(null);
+  const canvasXformRef = useRef({ scale: 1, x: 0, y: 0 });
+
+  const [zoomEnabled, setZoomEnabled] = useState(false);
+  const [canvasXform, setCanvasXform] = useState({ scale: 1, x: 0, y: 0 });
 
   const colorPickerRef = useRef<HTMLDivElement | null>(null);
   const sizePickerRef  = useRef<HTMLDivElement | null>(null);
@@ -265,11 +275,12 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
 
   const live = useRef({
     penOnlyMode: true,
-    penColor: initPT === 'black' ? '#ffffff' : '#1c1917',
-    penSize: 2, penType: 'pen' as PenType, fountainIntensity: 1.2,
+    penColor: initPS?.penColor ?? (initPT === 'black' ? '#ffffff' : '#1c1917'),
+    penSize: initPS?.penSize ?? 2, penType: (initPS?.penType ?? 'fountain') as PenType, fountainIntensity: initPS?.fountainIntensity ?? 1.0,
     isEraser: false, eraserType: 'stroke' as 'stroke'|'area',
     pageIdx: 0, autoReturnPen: true,
     paperType: initPT as 'white'|'yellow'|'black', showLines: true, lineSpacing: 30,
+    zoomEnabled: false,
   });
   live.current.penOnlyMode        = penOnlyMode;
   live.current.penColor           = penColor;
@@ -283,6 +294,7 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
   live.current.paperType          = paperType;
   live.current.showLines          = showLines;
   live.current.lineSpacing        = lineSpacing;
+  live.current.zoomEnabled        = zoomEnabled;
 
   // ── Background ─────────────────────────────────────────────────────────
   const drawBackground = useCallback((ctx: CanvasRenderingContext2D, cssW: number, cssH: number) => {
@@ -491,8 +503,20 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
     setNoteFolderId(editingNote?.folderId);
     const pt = editingNote?.paperType ?? (darkMode ? 'black' : 'white');
     setPaperType(pt);
-    setPenColor(pt === 'black' ? '#ffffff' : '#1c1917');
     live.current.paperType = pt;
+
+    // 펜 설정 복원 (저장된 설정 우선, 없으면 기본값)
+    const ps = editingNote?.penSettings;
+    const defaultColor = pt === 'black' ? '#ffffff' : '#1c1917';
+    setPenColor(ps?.penColor ?? defaultColor);
+    setPenSize(ps?.penSize ?? 2);
+    setPenSizeInput((ps?.penSize ?? 2).toFixed(1));
+    setPenType(ps?.penType ?? 'fountain');
+    setFountainIntensity(ps?.fountainIntensity ?? 1.0);
+    live.current.penColor          = ps?.penColor ?? defaultColor;
+    live.current.penSize           = ps?.penSize ?? 2;
+    live.current.penType           = ps?.penType ?? 'fountain';
+    live.current.fountainIntensity = ps?.fountainIntensity ?? 1.0;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingNote, darkMode]);
 
@@ -528,14 +552,65 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
     const container = containerRef.current;
     if (!container) return;
 
-    // ① 컨테이너 수준에서 터치 분류: 스와이프 vs 팜
+    // ① 컨테이너 수준에서 터치 분류: 스와이프 vs 팜 vs 핀치 줌
     const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length !== 1) { swipeTouchRef.current = null; return; }
+      // 2-finger + zoomEnabled → 핀치 줌 시작
+      if (e.touches.length === 2 && live.current.zoomEnabled) {
+        const [t1, t2] = [e.touches[0], e.touches[1]];
+        const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+        const containerRect = containerRef.current!.getBoundingClientRect();
+        const midSx = (t1.clientX + t2.clientX) / 2 - containerRect.left;
+        const midSy = (t1.clientY + t2.clientY) / 2 - containerRect.top;
+        const { scale, x: offX, y: offY } = canvasXformRef.current;
+        pinchRef.current = {
+          t1Id: t1.identifier, t2Id: t2.identifier,
+          startDist: dist, startScale: scale,
+          midCanvasX: (midSx - offX) / scale,
+          midCanvasY: (midSy - offY) / scale,
+        };
+        swipeTouchRef.current = null;
+        return;
+      }
+      // 2+ 터치인데 줌 비활성 → 핀치 취소, 스와이프 취소
+      if (e.touches.length !== 1) {
+        swipeTouchRef.current = null;
+        pinchRef.current = null;
+        return;
+      }
+      // 1-finger → 스와이프/팜 분류
+      pinchRef.current = null;
       const t = e.touches[0];
-      swipeTouchRef.current = { id: t.identifier, startX: t.clientX, startY: t.clientY, classified: false, isSwipe: false };
+      swipeTouchRef.current = {
+        id: t.identifier, startX: t.clientX, startY: t.clientY,
+        startTime: Date.now(), classified: false, isSwipe: false,
+      };
     };
 
     const onTouchMove = (e: TouchEvent) => {
+      // 핀치 줌 처리 (2-finger)
+      const pr = pinchRef.current;
+      if (pr && e.touches.length >= 2) {
+        const t1 = Array.from(e.touches).find(t => t.identifier === pr.t1Id);
+        const t2 = Array.from(e.touches).find(t => t.identifier === pr.t2Id);
+        if (t1 && t2) {
+          const dist    = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+          const rawScale = pr.startScale * dist / pr.startDist;
+          const newScale = Math.max(0.3, Math.min(8, rawScale)); // 0.3x ~ 8x
+          const containerRect = containerRef.current!.getBoundingClientRect();
+          const newMidSx = (t1.clientX + t2.clientX) / 2 - containerRect.left;
+          const newMidSy = (t1.clientY + t2.clientY) / 2 - containerRect.top;
+          // 중심점(canvas 좌표)이 화면 상 같은 위치에 유지되도록 offset 계산
+          const newX = newMidSx - pr.midCanvasX * newScale;
+          const newY = newMidSy - pr.midCanvasY * newScale;
+          const xform = { scale: newScale, x: newX, y: newY };
+          canvasXformRef.current = xform;
+          setCanvasXform(xform);
+          cachedRectRef.current = null; // 시각적 rect 변경 → 캐시 무효화
+        }
+        e.preventDefault();
+        return;
+      }
+
       const sr = swipeTouchRef.current;
       if (!sr) return;
       const touch = Array.from(e.touches).find(t => t.identifier === sr.id);
@@ -545,17 +620,22 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
       const dy = touch.clientY - sr.startY;
 
       if (!sr.classified && (Math.abs(dx) > 14 || Math.abs(dy) > 14)) {
-        // 오른쪽→왼쪽 스와이프 감지 (dx < 0 && 수평 지배)
-        sr.isSwipe = dx < -10 && Math.abs(dx) > Math.abs(dy) * 1.5;
+        // 수평 지배면 스와이프 (좌우 양방향)
+        sr.isSwipe = Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 10;
         sr.classified = true;
       }
 
       if (sr.classified && sr.isSwipe) {
-        // 스와이프 진행 시각 피드백
-        const prog = Math.min(1, Math.abs(dx) / 120);
-        setSwipeProgress(prog);
-        setSwipeHint('hinting');
         e.preventDefault(); // 스크롤 방지
+        // 왼쪽 스와이프 + 느린 경우(400ms 초과)만 힌트 표시 → 새 페이지 예정
+        if (dx < 0) {
+          const elapsed = Date.now() - sr.startTime;
+          if (elapsed > 350) {
+            const prog = Math.min(1, Math.abs(dx) / 120);
+            setSwipeProgress(prog);
+            setSwipeHint('hinting');
+          }
+        }
       } else if (live.current.penOnlyMode) {
         // 팜리젝션: 스와이프가 아닌 터치 차단
         e.preventDefault();
@@ -563,16 +643,45 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
     };
 
     const onTouchEnd = (e: TouchEvent) => {
+      // 핀치 손가락 떼기
+      if (pinchRef.current) {
+        const pr = pinchRef.current;
+        const remaining = Array.from(e.touches);
+        if (!remaining.find(t => t.identifier === pr.t1Id) || !remaining.find(t => t.identifier === pr.t2Id)) {
+          pinchRef.current = null;
+        }
+        return;
+      }
+
       const sr = swipeTouchRef.current;
       if (!sr) return;
       const touch = Array.from(e.changedTouches).find(t => t.identifier === sr.id);
       if (touch && sr.isSwipe) {
         const dx = touch.clientX - sr.startX;
-        if (dx < -80) {
-          // 스와이프 완성 → 새 페이지 추가
-          addPageRef.current();
-          setSwipeProgress(1);
-          setTimeout(() => { setSwipeHint('idle'); setSwipeProgress(0); }, 500);
+        const elapsed = Date.now() - sr.startTime;
+        const absDx = Math.abs(dx);
+
+        if (absDx > 60) {
+          if (elapsed < 400) {
+            // ── 빠른 스와이프 → 페이지 이동 ──
+            if (dx < 0) {
+              // 왼쪽 → 다음 페이지
+              const cur = live.current.pageIdx;
+              if (cur < pagesLenRef.current - 1) goToPageRef.current(cur + 1);
+            } else {
+              // 오른쪽 → 이전 페이지
+              const cur = live.current.pageIdx;
+              if (cur > 0) goToPageRef.current(cur - 1);
+            }
+            setSwipeHint('idle'); setSwipeProgress(0);
+          } else if (dx < -80) {
+            // ── 느린 왼쪽 스와이프 → 새 페이지 추가 ──
+            addPageRef.current();
+            setSwipeProgress(1);
+            setTimeout(() => { setSwipeHint('idle'); setSwipeProgress(0); }, 500);
+          } else {
+            setSwipeHint('idle'); setSwipeProgress(0);
+          }
         } else {
           setSwipeHint('idle'); setSwipeProgress(0);
         }
@@ -655,7 +764,8 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
       try { target.setPointerCapture(e.pointerId); } catch {}
       const rect = target.getBoundingClientRect();
       cachedRectRef.current = rect;
-      const p: Point = { x: e.clientX - rect.left, y: e.clientY - rect.top, pressure: e.pressure > 0 ? e.pressure : 0.5, t: Date.now() };
+      const xfmScale = canvasXformRef.current.scale;
+      const p: Point = { x: (e.clientX - rect.left) / xfmScale, y: (e.clientY - rect.top) / xfmScale, pressure: e.pressure > 0 ? e.pressure : 0.5, t: Date.now() };
       isDrawingRef.current = true;
       if (ie) { handleEraseAt(p, et, ps); return; }
 
@@ -679,9 +789,10 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
               fountainIntensity: fi, isEraser: ie, eraserType: et } = live.current;
       if (pom && e.pointerType === 'touch') return;
       const rect = cachedRectRef.current || target.getBoundingClientRect();
+      const xfmScale = canvasXformRef.current.scale;
       const events = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e];
       for (const ev of events) {
-        const p: Point = { x: ev.clientX - rect.left, y: ev.clientY - rect.top, pressure: ev.pressure > 0 ? ev.pressure : 0.5, t: Date.now() };
+        const p: Point = { x: (ev.clientX - rect.left) / xfmScale, y: (ev.clientY - rect.top) / xfmScale, pressure: ev.pressure > 0 ? ev.pressure : 0.5, t: Date.now() };
         if (ie) { handleEraseAt(p, et, ps); continue; }
         if (!currentStrokeRef.current) continue;
         const pts = currentStrokeRef.current.points;
@@ -813,11 +924,19 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
     const allPageStrokes = pages.map((p, i) =>
       i === live.current.pageIdx ? [...strokesRef.current] : p.strokes
     ) as SavedStroke[][];
+    // 현재 펜 설정 수집
+    const currentPenSettings: PenSettings = {
+      penType:          live.current.penType,
+      penSize:          live.current.penSize,
+      penColor:         live.current.penColor,
+      fountainIntensity:live.current.fountainIntensity,
+    };
     onSave(
       dataUrl, finalOcr, title, live.current.paperType,
       finalTags, noteFolderId,
       pdfBase64, pdfText, pdfPageCount,
       allPageStrokes.some(s => s.length > 0) ? allPageStrokes : undefined,
+      currentPenSettings,
       editingNote?.id,
     );
   };
@@ -843,7 +962,9 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
     strokesRef.current = []; baseImageRef.current = null;
     redrawBase(); clearActive();
   };
-  addPageRef.current = addPage; // 스와이프 핸들러가 최신 addPage를 호출하도록
+  addPageRef.current  = addPage;  // 스와이프 핸들러가 최신 addPage를 호출하도록
+  goToPageRef.current = goToPage; // 스와이프 핸들러가 최신 goToPage를 호출하도록
+  pagesLenRef.current = pages.length; // 스와이프 핸들러에서 페이지 수 확인용
 
   // ── PDF 임포트 (원본 방식) ───────────────────────────────────────────────
   const importPdf = useCallback(async (file: File) => {
@@ -993,7 +1114,7 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
                   <div className="px-3 py-2 border-t border-stone-100 dark:border-slate-700 mt-1">
                     <div className="text-[10px] font-black text-stone-500 mb-1.5">만년필 필압 강도</div>
                     <div className="flex gap-1">
-                      {[{label:'약',val:0.7},{label:'중',val:1.2},{label:'강',val:2.0}].map(({label,val}) => (
+                      {[{label:'약',val:0.7},{label:'중',val:1.0},{label:'강',val:2.0}].map(({label,val}) => (
                         <button key={label} type="button"
                           onClick={() => setFountainIntensity(val)}
                           className={`flex-1 py-1 rounded-lg text-[10px] font-black cursor-pointer ${fountainIntensity===val?'bg-purple-600 text-white':'bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-slate-300'}`}>
@@ -1228,6 +1349,27 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
             <span className="hidden sm:inline">{penOnlyMode?'펜전용':'터치/펜'}</span>
           </button>
 
+          {/* ── 핀치 줌 ── */}
+          <button type="button"
+            onClick={() => {
+              if (zoomEnabled) {
+                // 줌 끄면 1:1 리셋
+                const id = { scale: 1, x: 0, y: 0 };
+                canvasXformRef.current = id;
+                setCanvasXform(id);
+                cachedRectRef.current = null;
+              }
+              setZoomEnabled(z => !z);
+            }}
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${zoomEnabled?'bg-blue-100 dark:bg-blue-950/60 border-blue-300 text-blue-900 dark:text-blue-100 ring-2 ring-blue-200/80':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-300'}`}>
+            <span className="text-sm leading-none">🔍</span>
+            <span className="hidden sm:inline">
+              {zoomEnabled
+                ? (canvasXform.scale !== 1 ? `${Math.round(canvasXform.scale * 100)}%` : '줌ON')
+                : '줌'}
+            </span>
+          </button>
+
           {/* ── OCR ── */}
           <button type="button" disabled={isOcrLoading} onClick={() => handleOcr()}
             className={`font-extrabold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1 cursor-pointer shadow-sm active:scale-95 disabled:opacity-50 text-white shrink-0 ${isOcrLoading?'bg-purple-500':ocrText?'bg-blue-500 hover:bg-blue-600':'bg-red-500 hover:bg-red-600 animate-pulse'}`}>
@@ -1318,10 +1460,19 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
       {/* ── Canvas ── */}
       <div ref={containerRef} className="relative w-full flex-1 overflow-hidden select-none"
         style={{touchAction:'none', overscrollBehavior:'none', backgroundColor:bgColor}}>
-        <canvas ref={baseCanvasRef} className="absolute inset-0 w-full h-full block"
-          style={{touchAction:'none', userSelect:'none', willChange:'transform'}}/>
-        <canvas ref={activeCanvasRef} className="absolute inset-0 w-full h-full block"
-          style={{touchAction:'none', userSelect:'none', willChange:'transform', background:'transparent'}}/>
+        {/* 줌/패닝 wrapper — CSS transform으로 확대/축소 처리, 캔버스 자체 해상도는 불변 */}
+        <div ref={canvasWrapRef} className="absolute inset-0"
+          style={{
+            touchAction: 'none',
+            transform: `translate(${canvasXform.x}px,${canvasXform.y}px) scale(${canvasXform.scale})`,
+            transformOrigin: '0 0',
+            willChange: 'transform',
+          }}>
+          <canvas ref={baseCanvasRef} className="absolute inset-0 w-full h-full block"
+            style={{touchAction:'none', userSelect:'none', willChange:'transform'}}/>
+          <canvas ref={activeCanvasRef} className="absolute inset-0 w-full h-full block"
+            style={{touchAction:'none', userSelect:'none', willChange:'transform', background:'transparent'}}/>
+        </div>
 
         {/* ── 스와이프 새 페이지 힌트 ── */}
         {swipeHint === 'hinting' && (
@@ -1332,7 +1483,7 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
               <div className="text-2xl animate-bounce">←</div>
               <div className="text-white font-black text-xs text-center leading-tight px-3 py-2 rounded-2xl shadow-xl"
                 style={{background:'rgba(124,58,237,0.85)', backdropFilter:'blur(4px)'}}>
-                오른쪽 빈공간에<br/>새 노트 추가합니다
+                ← 새 페이지 추가
               </div>
               {swipeProgress > 0.6 && (
                 <div className="text-white text-[10px] font-bold opacity-80">
@@ -1343,6 +1494,27 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = []
           </div>
         )}
       </div>
+
+      {/* ── 페이지 스크러버 (3페이지 이상일 때 표시) ── */}
+      {pages.length > 2 && (
+        <div className="flex items-center gap-2 px-3 py-1.5 bg-stone-50 dark:bg-slate-900 border-t border-stone-200 dark:border-slate-800"
+          style={{touchAction:'auto'}}
+          onPointerDown={e => e.stopPropagation()}>
+          <span className="text-[10px] font-bold text-stone-400 w-5 text-right shrink-0">1</span>
+          <input
+            type="range"
+            min={0}
+            max={pages.length - 1}
+            value={pageIdx}
+            onChange={e => goToPage(parseInt(e.target.value))}
+            className="flex-1 accent-purple-600 cursor-pointer"
+            style={{touchAction:'auto', height:'4px'}}
+            onPointerDown={e => e.stopPropagation()}
+          />
+          <span className="text-[10px] font-bold text-stone-400 w-5 shrink-0">{pages.length}</span>
+          <span className="text-[10px] font-black text-purple-600 shrink-0">{pageIdx+1}p</span>
+        </div>
+      )}
 
       {/* OCR result */}
       {ocrText && (

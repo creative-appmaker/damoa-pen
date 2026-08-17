@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { FolderOpen, FolderPlus, X, ChevronRight, Tag } from 'lucide-react';
-import { PenNote, Folder } from './types';
+import { PenNote, Folder, PenSettings } from './types';
 import { getAllNotes, saveNote, deleteNote, getFolders, saveFolder, deleteFolder } from './lib/storage';
 import { PenCanvas } from './components/PenCanvas';
 import { NoteList } from './components/NoteList';
@@ -80,6 +80,7 @@ export default function App() {
     pdfText?: string,
     pdfPageCount?: number,
     pageStrokes?: import('./types').SavedStroke[][],
+    penSettings?: PenSettings,
     id?: string,
   ) => {
     const now = Date.now();
@@ -98,6 +99,7 @@ export default function App() {
       pdfText:       pdfText       ?? editingNote?.pdfText,
       pdfPageCount:  pdfPageCount  ?? editingNote?.pdfPageCount,
       pageStrokes:   pageStrokes   ?? editingNote?.pageStrokes,
+      penSettings:   penSettings   ?? editingNote?.penSettings,
     };
     await saveNote(note);
     await loadNotes();

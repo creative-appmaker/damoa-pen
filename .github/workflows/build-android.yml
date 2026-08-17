@@ -247,22 +247,63 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      - name: Build Debug APK
+      - name: Setup signing keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release.jks
+          echo "✅ Keystore decoded ($(wc -c < android/app/release.jks) bytes)"
+
+      - name: Inject signing config into app/build.gradle
+        run: |
+          python3 << 'PYEOF'
+          with open("android/app/build.gradle", "r") as f:
+              content = f.read()
+
+          # signingConfigs 블록 추가 (buildTypes 바로 앞에)
+          signing_block = """
+              signingConfigs {
+                  release {
+                      storeFile file("release.jks")
+                      storePassword System.getenv("STORE_PASSWORD")
+                      keyAlias System.getenv("KEY_ALIAS")
+                      keyPassword System.getenv("KEY_PASSWORD")
+                  }
+              }
+          """
+          if "signingConfigs" not in content:
+              content = content.replace("    buildTypes {", signing_block + "    buildTypes {")
+
+          # release buildType에 signingConfig 적용
+          if "signingConfig signingConfigs.release" not in content:
+              content = content.replace(
+                  "        release {",
+                  "        release {\n            signingConfig signingConfigs.release"
+              )
+
+          with open("android/app/build.gradle", "w") as f:
+              f.write(content)
+          print("✅ Signing config injected")
+          PYEOF
+
+      - name: Build Release APK
+        env:
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           cd android
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: damoa-pen-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: damoa-pen-release
+          path: android/app/build/outputs/apk/release/app-release.apk
           retention-days: 30
 
       - name: Build summary
         run: |
           echo "## ✅ APK 빌드 완료!" >> $GITHUB_STEP_SUMMARY
+          echo "- 서명: 고정 keystore (패키지 충돌 없음)" >> $GITHUB_STEP_SUMMARY
           echo "- ML Kit Digital Ink Recognition (한글 필기 인식, 오프라인)" >> $GITHUB_STEP_SUMMARY
-          echo "- ML Kit Text Recognition Korean (이미지 OCR 폴백)" >> $GITHUB_STEP_SUMMARY
-          echo "APK: **Actions → 이 실행 → Artifacts → damoa-pen-debug**" >> $GITHUB_STEP_SUMMARY
-          ls -lh android/app/build/outputs/apk/debug/
+          echo "APK: **Actions → 이 실행 → Artifacts → damoa-pen-release**" >> $GITHUB_STEP_SUMMARY
+          ls -lh android/app/build/outputs/apk/release/ 2>/dev/null || echo "(파일 경로 확인 필요)"

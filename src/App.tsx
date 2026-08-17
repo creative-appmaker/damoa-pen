@@ -22,6 +22,7 @@ export default function App() {
   // ── 탭 시스템 ────────────────────────────────────────────────────────────
   const [openTabs,    setOpenTabs]    = useState<Array<{noteId:string|null; title:string; color:string}>>([]);
   const [activeTabIdx,setActiveTabIdx]= useState(0);
+  const [tabEditIdx,  setTabEditIdx]  = useState<number | null>(null); // 탭 편집 팝업
   const [isLocked,    setIsLocked]    = useState(() => localStorage.getItem(LOCK_KEY) === 'true');
   const [darkMode,    setDarkMode]    = useState(() => {
     const stored = localStorage.getItem('damoa_pen_dark');
@@ -80,7 +81,10 @@ export default function App() {
     setView('canvas');
   };
 
-  const handleEdit = (note: PenNote) => {
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const handleEdit = (note: PenNote, query?: string) => {
+    if (query !== undefined) setSearchQuery(query);
     const existingIdx = openTabs.findIndex(t => t.noteId === note.id);
     if (existingIdx >= 0) {
       setActiveTabIdx(existingIdx);
@@ -110,6 +114,7 @@ export default function App() {
     penSettings?: PenSettings,
     pageImages?: (string | undefined)[],
     id?: string,
+    pageOcrTexts?: string[],
   ) => {
     const now = Date.now();
     const noteId = id || `note-${now}-${Math.random().toString(36).slice(2)}`;
@@ -130,6 +135,7 @@ export default function App() {
       pageStrokes:   pageStrokes   ?? editingNote?.pageStrokes,
       penSettings:   penSettings   ?? editingNote?.penSettings,
       pageImages:    pageImages    ?? editingNote?.pageImages,
+      pageOcrTexts:  pageOcrTexts  ?? editingNote?.pageOcrTexts,
     };
     await saveNote(note);
     await loadNotes();
@@ -190,6 +196,14 @@ export default function App() {
       const ci = TAB_PALETTE.indexOf(t.color);
       return { ...t, color: TAB_PALETTE[(ci + 1) % TAB_PALETTE.length] };
     }));
+  };
+
+  const handleTabEdit = (idx: number) => setTabEditIdx(idx === tabEditIdx ? null : idx);
+  const handleTabTitleChange = (idx: number, title: string) => {
+    setOpenTabs(prev => prev.map((t, i) => i === idx ? { ...t, title } : t));
+  };
+  const handleTabColorSet = (idx: number, color: string) => {
+    setOpenTabs(prev => prev.map((t, i) => i === idx ? { ...t, color } : t));
   };
 
   const handleNewTab = () => handleNew();
@@ -359,11 +373,16 @@ export default function App() {
             folders={folders}
             onSave={handleSave}
             onBack={handleBack}
+            initialSearchQuery={searchQuery || undefined}
             openTabs={openTabs}
             activeTabIdx={activeTabIdx}
             onTabSwitch={handleTabSwitch}
             onTabClose={handleTabClose}
             onTabColorCycle={handleTabColorCycle}
+            onTabEdit={handleTabEdit}
+            onTabTitleChange={handleTabTitleChange}
+            onTabColorSet={handleTabColorSet}
+            tabEditIdx={tabEditIdx}
             onNewTab={handleNewTab}
           />
         )}

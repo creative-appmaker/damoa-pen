@@ -16,6 +16,8 @@ interface Stroke {
   size: number;
   penType: PenType;
   fountainIntensity: number;
+  opacity?: number;   // 형광펜 투명도 (기본 0.38)
+  straight?: boolean; // 형광펜 직선 모드
 }
 
 interface Props {
@@ -31,14 +33,20 @@ interface Props {
     penSettings?: PenSettings,
     pageImages?: (string|undefined)[],
     id?: string,
+    pageOcrTexts?: string[],
   ) => void;
   onBack: () => void;
+  initialSearchQuery?: string; // 검색어 → 해당 페이지로 이동
   // Tab system
   openTabs?: Array<{ noteId: string | null; title: string; color: string }>;
   activeTabIdx?: number;
   onTabSwitch?: (newIdx: number) => void;
   onTabClose?: (idx: number) => void;
   onTabColorCycle?: (idx: number) => void;
+  onTabEdit?: (idx: number) => void;
+  onTabTitleChange?: (idx: number, title: string) => void;
+  onTabColorSet?: (idx: number, color: string) => void;
+  tabEditIdx?: number | null;
   onNewTab?: () => void;
 }
 
@@ -91,7 +99,7 @@ const compress = (dataUrl: string, maxW = 1200, q = 0.78): Promise<string> =>
 // ── Drawing helpers ──────────────────────────────────────────────────────────
 function applyPenStyle(
   ctx: CanvasRenderingContext2D,
-  stroke: Pick<Stroke, 'color'|'size'|'penType'|'fountainIntensity'>,
+  stroke: Pick<Stroke, 'color'|'size'|'penType'|'fountainIntensity'|'opacity'>,
   pressure = 1,
 ) {
   const { color, size, penType, fountainIntensity } = stroke;
@@ -99,7 +107,7 @@ function applyPenStyle(
   ctx.lineJoin = 'round';
 
   if (penType === 'highlighter') {
-    ctx.globalAlpha = 0.38;
+    ctx.globalAlpha = stroke.opacity ?? 0.38;
     ctx.strokeStyle = color;
     ctx.fillStyle   = color;
     ctx.lineWidth   = Math.max(8, size * 4);
@@ -180,7 +188,7 @@ function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
 
 function appendSegment(
   ctx: CanvasRenderingContext2D,
-  stroke: Pick<Stroke, 'color'|'size'|'penType'|'fountainIntensity'>,
+  stroke: Pick<Stroke, 'color'|'size'|'penType'|'fountainIntensity'|'opacity'>,
   pts: Point[],
 ) {
   if (pts.length < 2) return;
@@ -212,8 +220,9 @@ function appendSegment(
 // ── Component ────────────────────────────────────────────────────────────────
 export const PenCanvas: React.FC<Props> = ({
   editingNote, darkMode, folders = [], onSave, onBack,
+  initialSearchQuery,
   openTabs, activeTabIdx: activeTabIdxProp = 0,
-  onTabSwitch, onTabClose, onTabColorCycle, onNewTab,
+  onTabSwitch, onTabClose, onTabColorCycle, onTabEdit, onTabTitleChange, onTabColorSet, tabEditIdx, onNewTab,
 }) => {
   const baseCanvasRef   = useRef<HTMLCanvasElement | null>(null);
   const activeCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -283,6 +292,12 @@ export const PenCanvas: React.FC<Props> = ({
   const [zoomEnabled,      setZoomEnabled]      = useState(false);
   const [zoomLocked,       setZoomLocked]       = useState(false);
   const [showSettingsPanel,setShowSettingsPanel] = useState(false);
+
+  // ── 형광펜 설정 ───────────────────────────────────────────────────────────
+  const [showHlMenu,       setShowHlMenu]       = useState(false);
+  const [hlOpacity,        setHlOpacity]        = useState(0.38);
+  const [hlStraight,       setHlStraight]       = useState(false);
+  const hlStartRef = useRef<Point|null>(null);
   const [canvasXform, setCanvasXform] = useState({ scale: 1, x: 0, y: 0 });
 
   const colorPickerRef = useRef<HTMLDivElement | null>(null);
@@ -290,6 +305,7 @@ export const PenCanvas: React.FC<Props> = ({
   const penMenuRef     = useRef<HTMLDivElement | null>(null);
   const eraserMenuRef  = useRef<HTMLDivElement | null>(null);
   const paperMenuRef   = useRef<HTMLDivElement | null>(null);
+  const hlMenuRef      = useRef<HTMLDivElement | null>(null);
 
   const live = useRef({
     penOnlyMode: true,
@@ -299,6 +315,7 @@ export const PenCanvas: React.FC<Props> = ({
     pageIdx: 0, autoReturnPen: true,
     paperType: initPT as 'white'|'yellow'|'black', showLines: true, lineSpacing: 30,
     zoomEnabled: false,
+    hlOpacity: 0.38, hlStraight: false,
   });
   live.current.penOnlyMode        = penOnlyMode;
   live.current.penColor           = penColor;
@@ -313,6 +330,8 @@ export const PenCanvas: React.FC<Props> = ({
   live.current.showLines          = showLines;
   live.current.lineSpacing        = lineSpacing;
   live.current.zoomEnabled        = zoomEnabled;
+  live.current.hlOpacity          = hlOpacity;
+  live.current.hlStraight         = hlStraight;
   pageImagesRef.current           = pageImages; // stale closure 방지용 ref 동기화
 
   // ── Background ─────────────────────────────────────────────────────────
@@ -511,15 +530,34 @@ export const PenCanvas: React.FC<Props> = ({
     } else {
       // ── 일반 손글씨 노트 ──
       setPdfBase64(undefined); setPdfText(undefined); setPdfPageCount(undefined);
-      setPages([{ id: 'p1', strokes: [] }]);
-      setPageIdx(0);
 
-      if (editingNote?.dataUrl) {
+      const savedStrokes = editingNote?.pageStrokes;
+      const hasPageStrokes = savedStrokes && savedStrokes.some(p => p.length > 0);
+
+      if (hasPageStrokes) {
+        // pageStrokes가 있으면 벡터로 복원 → 두겹 방지, 다중 페이지 복원
+        const restored: Page[] = savedStrokes.map((s, i) => ({
+          id: `p${i + 1}`,
+          strokes: s as Stroke[],
+        }));
+        setPages(restored);
+        setPageIdx(0);
+        strokesRef.current = (restored[0]?.strokes ?? []) as Stroke[];
+        baseImageRef.current = null;
+        redrawBase();
+      } else if (editingNote?.dataUrl) {
+        // 구버전 노트: pageStrokes 없고 dataUrl만 있는 경우 → 이미지로 표시
+        setPages([{ id: 'p1', strokes: [] }]);
+        setPageIdx(0);
+        strokesRef.current = [];
         const img = new Image(); img.crossOrigin = 'anonymous';
         img.onload = () => { baseImageRef.current = img; redrawBase(); };
         img.src = editingNote.dataUrl;
       } else {
+        setPages([{ id: 'p1', strokes: [] }]);
+        setPageIdx(0);
         baseImageRef.current = null; strokesRef.current = [];
+        redrawBase();
       }
     }
 
@@ -557,6 +595,15 @@ export const PenCanvas: React.FC<Props> = ({
       ui.onload = () => { pageUserImgRef.current = ui; redrawBase(); };
       ui.src = imgs[0];
     }
+
+    // 검색어가 있으면 해당 keyword가 있는 페이지로 이동 (setTimeout으로 상태 정착 후)
+    if (initialSearchQuery && editingNote?.pageOcrTexts) {
+      const q = initialSearchQuery.toLowerCase();
+      const targetIdx = editingNote.pageOcrTexts.findIndex(t => t.toLowerCase().includes(q));
+      if (targetIdx > 0) {
+        setTimeout(() => goToPageRef.current(targetIdx), 100);
+      }
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingNote, darkMode]);
 
@@ -580,7 +627,8 @@ export const PenCanvas: React.FC<Props> = ({
       if (penMenuRef.current?.contains(t))     return;
       if (eraserMenuRef.current?.contains(t))  return;
       if (paperMenuRef.current?.contains(t))   return;
-      setShowColorPicker(false); setShowSizePicker(false);
+      if (hlMenuRef.current?.contains(t))      return;
+      setShowColorPicker(false); setShowSizePicker(false); setShowHlMenu(false);
       setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false);
     };
     const t = setTimeout(() => document.addEventListener('pointerdown', handler), 0);
@@ -798,7 +846,8 @@ export const PenCanvas: React.FC<Props> = ({
 
     const onDown = (e: PointerEvent) => {
       const { penOnlyMode: pom, penColor: pc, penSize: ps, penType: pt,
-              fountainIntensity: fi, isEraser: ie, eraserType: et } = live.current;
+              fountainIntensity: fi, isEraser: ie, eraserType: et,
+              hlOpacity: hlo, hlStraight: hls } = live.current;
       if (pom && e.pointerType === 'touch') return;
       e.preventDefault();
       try { target.setPointerCapture(e.pointerId); } catch {}
@@ -809,7 +858,15 @@ export const PenCanvas: React.FC<Props> = ({
       isDrawingRef.current = true;
       if (ie) { handleEraseAt(p, et, ps); return; }
 
-      const stroke: Stroke = { id: `s-${Date.now()}-${Math.random()}`, points: [p], color: pc, size: ps, penType: pt, fountainIntensity: fi };
+      // 형광펜 직선 모드: 시작점 기록
+      if (pt === 'highlighter' && hls) hlStartRef.current = { x: p.x, y: p.y, pressure: p.pressure };
+      else hlStartRef.current = null;
+
+      const stroke: Stroke = {
+        id: `s-${Date.now()}-${Math.random()}`, points: [p], color: pc, size: ps, penType: pt,
+        fountainIntensity: fi,
+        ...(pt === 'highlighter' ? { opacity: hlo, straight: hls } : {}),
+      };
       currentStrokeRef.current = stroke;
 
       // First dot on active canvas
@@ -835,12 +892,26 @@ export const PenCanvas: React.FC<Props> = ({
         const p: Point = { x: (ev.clientX - rect.left) / xfmScale, y: (ev.clientY - rect.top) / xfmScale, pressure: ev.pressure > 0 ? ev.pressure : 0.5, t: Date.now() };
         if (ie) { handleEraseAt(p, et, ps); continue; }
         if (!currentStrokeRef.current) continue;
+
+        // 형광펜 직선 모드: 시작점→현재점 미리보기만, 포인트 축적 안 함
+        if (pt === 'highlighter' && hlStartRef.current) {
+          const ac = activeCanvasRef.current;
+          if (ac) {
+            const ctx = ac.getContext('2d')!;
+            ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,ac.width,ac.height); ctx.restore();
+            const previewStroke = { ...currentStrokeRef.current, points: [hlStartRef.current, p] };
+            appendSegment(ctx, { color: pc, size: ps, penType: pt, fountainIntensity: fi, opacity: live.current.hlOpacity } as Stroke, [hlStartRef.current, p]);
+            void previewStroke;
+          }
+          continue;
+        }
+
         const pts = currentStrokeRef.current.points;
         const prev = pts[pts.length - 1];
         if (prev) { const dx = p.x - prev.x, dy = p.y - prev.y; if (dx*dx + dy*dy < 0.25) continue; }
         pts.push(p);
         const ac = activeCanvasRef.current;
-        if (ac) appendSegment(ac.getContext('2d')!, { color: pc, size: ps, penType: pt, fountainIntensity: fi }, pts);
+        if (ac) appendSegment(ac.getContext('2d')!, { color: pc, size: ps, penType: pt, fountainIntensity: fi } as Stroke, pts);
       }
     };
 
@@ -851,7 +922,15 @@ export const PenCanvas: React.FC<Props> = ({
       isDrawingRef.current = false;
       try { target.releasePointerCapture(e.pointerId); } catch {}
       if (currentStrokeRef.current) {
-        const stroke = currentStrokeRef.current;
+        let stroke = currentStrokeRef.current;
+        // 형광펜 직선: 시작점→끝점 2포인트만 저장
+        if (stroke.penType === 'highlighter' && hlStartRef.current && stroke.points.length > 0) {
+          const rect2 = cachedRectRef.current || target.getBoundingClientRect();
+          const xs = canvasXformRef.current.scale;
+          const ep: Point = { x: (e.clientX - rect2.left) / xs, y: (e.clientY - rect2.top) / xs, pressure: 0.5, t: Date.now() };
+          stroke = { ...stroke, points: [hlStartRef.current, ep] };
+          hlStartRef.current = null;
+        }
         strokesRef.current.push(stroke);
         setPages(prev => prev.map((pg, i) => i === ci ? { ...pg, strokes: [...strokesRef.current] } : pg));
         currentStrokeRef.current = null;
@@ -1010,6 +1089,10 @@ export const PenCanvas: React.FC<Props> = ({
       fountainIntensity:live.current.fountainIntensity,
     };
     const currentPageImages = pageImagesRef.current;
+    // 페이지별 OCR 텍스트 수집 (현재 페이지는 finalOcr 사용)
+    const currentPageOcrTexts: string[] = pages.map((_, i) =>
+      i === live.current.pageIdx ? finalOcr : (editingNote?.pageOcrTexts?.[i] ?? '')
+    );
     onSave(
       dataUrl, finalOcr, title, live.current.paperType,
       finalTags, noteFolderId,
@@ -1018,6 +1101,7 @@ export const PenCanvas: React.FC<Props> = ({
       currentPenSettings,
       currentPageImages.some(Boolean) ? currentPageImages : undefined,
       editingNote?.id,
+      currentPageOcrTexts.some(Boolean) ? currentPageOcrTexts : undefined,
     );
   };
 
@@ -1130,34 +1214,72 @@ export const PenCanvas: React.FC<Props> = ({
 
       {/* ── 탭 바 ── */}
       {openTabs && openTabs.length > 0 && (
-        <div className="flex items-center bg-stone-200 dark:bg-slate-900 border-b border-stone-300 dark:border-slate-700 overflow-x-auto"
-          style={{touchAction:'auto', scrollbarWidth:'none', WebkitOverflowScrolling:'touch'}}>
-          {openTabs.map((tab, i) => (
-            <div key={i}
-              className={`flex items-center gap-1 px-2 py-1.5 text-xs font-bold cursor-pointer shrink-0 border-b-2 transition-colors ${i === activeTabIdxProp ? 'bg-stone-100 dark:bg-slate-800 border-purple-500 text-stone-900 dark:text-white' : 'border-transparent text-stone-500 dark:text-slate-400 hover:bg-stone-150 dark:hover:bg-slate-800/60'}`}
-              onClick={() => onTabSwitch?.(i)}>
-              {/* 탭 색상 점 (클릭으로 색상 순환) */}
-              <span
-                className="w-2.5 h-2.5 rounded-full shrink-0 cursor-pointer ring-1 ring-white/40"
-                style={{background: tab.color}}
-                onClick={e => { e.stopPropagation(); onTabColorCycle?.(i); }}
-              />
-              {/* 탭 제목 */}
-              <span className="max-w-[80px] truncate">{tab.title}</span>
-              {/* 닫기 버튼 */}
-              <button type="button"
-                className="ml-0.5 rounded-full text-stone-400 hover:text-red-400 dark:hover:text-red-400 cursor-pointer"
-                onClick={e => { e.stopPropagation(); onTabClose?.(i); }}>
-                <X className="w-3 h-3"/>
-              </button>
-            </div>
-          ))}
-          {/* 새 탭 버튼 */}
-          <button type="button" title="새 노트 탭"
-            onClick={onNewTab}
-            className="flex items-center justify-center px-2 py-1.5 text-stone-400 dark:text-slate-500 hover:text-purple-600 dark:hover:text-purple-400 cursor-pointer shrink-0">
-            <Plus className="w-3.5 h-3.5"/>
-          </button>
+        <div className="relative">
+          <div className="flex items-center bg-stone-200 dark:bg-slate-900 border-b border-stone-300 dark:border-slate-700 overflow-x-auto"
+            style={{touchAction:'auto', scrollbarWidth:'none', WebkitOverflowScrolling:'touch'}}>
+            {openTabs.map((tab, i) => (
+              <div key={i} className="relative shrink-0">
+                <div
+                  className={`flex items-center gap-1 px-2 py-1.5 text-xs font-bold cursor-pointer border-b-2 transition-colors ${i === activeTabIdxProp ? 'bg-stone-100 dark:bg-slate-800 border-purple-500 text-stone-900 dark:text-white' : 'border-transparent text-stone-500 dark:text-slate-400 hover:bg-stone-100/60 dark:hover:bg-slate-800/60'}`}
+                  onClick={() => { onTabSwitch?.(i); }}>
+                  {/* 색상 점 (클릭 → 편집 팝업) */}
+                  <span
+                    className="w-2.5 h-2.5 rounded-full shrink-0 ring-1 ring-white/40 cursor-pointer"
+                    style={{background: tab.color}}
+                    onClick={e => { e.stopPropagation(); onTabEdit?.(i); }}
+                  />
+                  {/* 제목 */}
+                  <span className="max-w-[80px] truncate">{tab.title}</span>
+                  {/* 닫기 */}
+                  <button type="button"
+                    className="ml-0.5 text-stone-400 hover:text-red-400 cursor-pointer"
+                    onClick={e => { e.stopPropagation(); onTabClose?.(i); }}>
+                    <X className="w-3 h-3"/>
+                  </button>
+                </div>
+
+                {/* 탭 편집 팝업 */}
+                {tabEditIdx === i && (
+                  <div className="absolute top-full left-0 z-50 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl shadow-2xl p-3 min-w-[200px]"
+                    style={{touchAction:'auto'}}
+                    onClick={e => e.stopPropagation()}
+                    onPointerDown={e => e.stopPropagation()}>
+                    {/* 제목 입력 */}
+                    <div className="mb-2.5">
+                      <div className="text-[10px] font-black text-stone-400 mb-1 uppercase tracking-wider">탭 제목</div>
+                      <input
+                        type="text"
+                        value={tab.title}
+                        onChange={e => onTabTitleChange?.(i, e.target.value)}
+                        className="w-full text-xs px-2.5 py-1.5 rounded-xl bg-stone-100 dark:bg-slate-800 text-stone-800 dark:text-slate-200 outline-none border border-transparent focus:border-purple-400"
+                        style={{touchAction:'auto'}}
+                        onPointerDown={e => e.stopPropagation()}
+                        onClick={e => e.stopPropagation()}
+                      />
+                    </div>
+                    {/* 색상 팔레트 */}
+                    <div>
+                      <div className="text-[10px] font-black text-stone-400 mb-1.5 uppercase tracking-wider">탭 색상</div>
+                      <div className="flex gap-1.5 flex-wrap">
+                        {['#8b5cf6','#22c55e','#3b82f6','#f97316','#ec4899','#14b8a6','#ef4444','#eab308','#06b6d4','#a855f7'].map(c => (
+                          <button key={c} type="button"
+                            onClick={() => onTabColorSet?.(i, c)}
+                            className={`w-6 h-6 rounded-full cursor-pointer border-2 transition-transform ${tab.color===c?'border-stone-800 dark:border-white scale-110':'border-transparent'}`}
+                            style={{background:c}}/>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+            {/* 새 탭 */}
+            <button type="button" title="새 노트 탭"
+              onClick={onNewTab}
+              className="flex items-center justify-center px-2 py-1.5 text-stone-400 dark:text-slate-500 hover:text-purple-600 dark:hover:text-purple-400 cursor-pointer shrink-0">
+              <Plus className="w-3.5 h-3.5"/>
+            </button>
+          </div>
         </div>
       )}
 
@@ -1243,6 +1365,31 @@ export const PenCanvas: React.FC<Props> = ({
                           {label}
                         </button>
                       ))}
+                    </div>
+                  </div>
+                )}
+                {/* Highlighter settings */}
+                {penType === 'highlighter' && (
+                  <div className="px-3 py-2 border-t border-stone-100 dark:border-slate-700 mt-1 flex flex-col gap-2">
+                    <div>
+                      <div className="text-[10px] font-black text-stone-500 mb-1.5">투명도</div>
+                      <div className="flex gap-1">
+                        {[{label:'연하게',val:0.20},{label:'보통',val:0.38},{label:'진하게',val:0.60}].map(({label,val}) => (
+                          <button key={label} type="button"
+                            onClick={() => { setHlOpacity(val); live.current.hlOpacity = val; }}
+                            className={`flex-1 py-1 rounded-lg text-[10px] font-black cursor-pointer ${Math.abs(hlOpacity-val)<0.05?'bg-yellow-400 text-stone-900':'bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-slate-300'}`}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-black text-stone-500">직선 모드</span>
+                      <button type="button"
+                        onClick={() => { setHlStraight(v => !v); live.current.hlStraight = !hlStraight; }}
+                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-black cursor-pointer ${hlStraight?'bg-yellow-400 text-stone-900':'bg-stone-200 dark:bg-slate-700 text-stone-600 dark:text-slate-300'}`}>
+                        {hlStraight?'ON':'OFF'}
+                      </button>
                     </div>
                   </div>
                 )}

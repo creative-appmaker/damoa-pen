@@ -40,6 +40,8 @@ export interface PenNote {
   pageStrokes?: SavedStroke[][];          // 페이지별 손글씨 스트로크
   penSettings?: PenSettings;             // 마지막 사용 펜 설정 (노트별 저장/복원)
   pageImages?: (string | undefined)[];   // 페이지별 첨부 사진 (base64 JPEG)
+  tabColor?: string;                     // 탭 색상
+  pageOcrTexts?: string[];               // 페이지별 OCR 텍스트 (검색 → 페이지 이동용)
 }
 
 // ── 펜 설정 ───────────────────────────────────────────────────────────────────

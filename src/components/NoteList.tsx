@@ -7,7 +7,7 @@ interface Props {
   notes: PenNote[];
   folders?: Folder[];
   onNew: () => void;
-  onEdit: (note: PenNote) => void;
+  onEdit: (note: PenNote, query?: string) => void;
   onDelete: (id: string) => void;
   onTogglePin: (note: PenNote) => void;
   onMoveToFolder?: (note: PenNote, folderId: string | undefined) => void;
@@ -146,7 +146,9 @@ export const NoteList: React.FC<Props> = ({
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
             {filtered.map(note => (
-              <NoteCard key={note.id} note={note} onEdit={onEdit} onDelete={onDelete} onTogglePin={onTogglePin}/>
+              <NoteCard key={note.id} note={note}
+                onEdit={n => onEdit(n, query.trim() || undefined)}
+                onDelete={onDelete} onTogglePin={onTogglePin}/>
             ))}
           </div>
         )}

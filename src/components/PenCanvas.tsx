@@ -438,15 +438,25 @@ export const PenCanvas: React.FC<Props> = ({
   }, [redrawBase]);
 
   // ── PDF 헬퍼 ──────────────────────────────────────────────────────────────
+  // LRU 캐시 최대 크기: ImageBitmap은 GPU 메모리를 점유하므로 10페이지로 제한
+  // (A4 DPR=2 기준 한 페이지 ≈ 10~20MB GPU → 10페이지 ≈ 100~200MB)
+  const PDF_CACHE_MAX = 10;
+
   /**
-   * 페이지 인덱스(0-based)를 ImageBitmap으로 렌더. 메모리 캐시 우선.
-   * JPEG 인코딩을 없애고 GPU-backed ImageBitmap으로 직접 캐시 → 화질 무손실.
-   * 렌더 스케일 = DPR × (화면에 꽉 차도록) → 물리 픽셀 1:1 대응.
+   * 페이지 인덱스(0-based)를 ImageBitmap으로 렌더. LRU 메모리 캐시 우선.
+   * JPEG 인코딩 없이 GPU-backed ImageBitmap으로 캐시 → 화질 무손실.
+   * 렌더 스케일 = DPR (물리 픽셀 1:1) — 최대 2.5배 제한.
    */
   const renderPdfPage = useCallback(async (idx: number): Promise<ImageBitmap | null> => {
-    // 1. 메모리 캐시 확인
-    const hit = pdfCacheRef.current.get(idx);
-    if (hit) return hit;
+    // 1. LRU 캐시 확인 — Map은 삽입 순서 유지 → 오래된 것이 앞
+    const cache = pdfCacheRef.current;
+    if (cache.has(idx)) {
+      // LRU 갱신: 삭제 후 재삽입
+      const hit = cache.get(idx)!;
+      cache.delete(idx);
+      cache.set(idx, hit);
+      return hit;
+    }
     // 2. pdf.js 렌더
     if (!pdfDocRef.current) return null;
     try {
@@ -454,8 +464,8 @@ export const PenCanvas: React.FC<Props> = ({
       const container = containerRef.current;
       const cssW = container?.clientWidth  || 800;
       const cssH = container?.clientHeight || 600;
-      // DPR을 곱해 물리 픽셀 해상도로 렌더 (최대 3배 제한)
-      const dpr   = Math.min(window.devicePixelRatio || 1, 3);
+      // DPR 기반 스케일 (최대 2.5 — 메모리/화질 균형)
+      const dpr   = Math.min(window.devicePixelRatio || 1, 2.5);
       const vp0   = page.getViewport({ scale: 1 });
       const scale = Math.min(cssW / vp0.width, cssH / vp0.height) * dpr;
       const vp    = page.getViewport({ scale });
@@ -466,9 +476,22 @@ export const PenCanvas: React.FC<Props> = ({
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, c.width, c.height);
       await page.render({ canvasContext: ctx, viewport: vp }).promise;
-      // JPEG 변환 없이 ImageBitmap으로 직접 추출 (무손실, GPU 전송)
+      // JPEG 변환 없이 ImageBitmap으로 직접 추출 (무손실)
       const bmp = await createImageBitmap(c);
-      pdfCacheRef.current.set(idx, bmp);
+
+      // LRU 캐시 크기 초과 시 가장 오래된 항목 해제
+      if (cache.size >= PDF_CACHE_MAX) {
+        // 현재 표시 중 페이지(live.current.pageIdx)와 렌더 요청 페이지(idx)는 퇴거 금지
+        const protectedIdx = live.current.pageIdx;
+        for (const [k] of cache) {
+          if (k !== idx && k !== protectedIdx) {
+            cache.get(k)?.close();
+            cache.delete(k);
+            break; // 한 번에 하나씩 퇴거
+          }
+        }
+      }
+      cache.set(idx, bmp);
       return bmp;
     } catch (e) {
       console.error(`[damoa-pen] PDF 페이지 ${idx+1} 렌더 실패:`, e);
@@ -501,7 +524,7 @@ export const PenCanvas: React.FC<Props> = ({
     pdfDocRef.current = null;
     pdfCacheRef.current.forEach(bmp => bmp.close());
     pdfCacheRef.current.clear();
-    pageBgImageRef.current?.close();
+    // pageBgImageRef는 pdfCacheRef와 동일 객체를 참조 → close()는 위에서 이미 처리
     pageBgImageRef.current = null;
 
     if (editingNote?.pdfBase64) {
@@ -531,9 +554,10 @@ export const PenCanvas: React.FC<Props> = ({
           .then(async (pdf: any) => {
             pdfDocRef.current = pdf;
             await loadPageBg(0);
-            // 백그라운드: 나머지 페이지 렌더
-            for (let i = 1; i < count; i++) {
-              setPdfRenderMsg(`PDF 백그라운드 렌더 ${i+1}/${count}...`);
+            // 백그라운드: 다음 4페이지만 미리 렌더 (메모리 절약)
+            const prefetchEnd = Math.min(5, count);
+            for (let i = 1; i < prefetchEnd; i++) {
+              setPdfRenderMsg(`PDF 미리 렌더 ${i+1}/${count}...`);
               await renderPdfPage(i);
             }
             setPdfRenderMsg(null);
@@ -1229,10 +1253,11 @@ export const PenCanvas: React.FC<Props> = ({
       await loadPageBg(0);
       setTimeout(() => clearActive(), 30);
 
-      // ⑥ 나머지 페이지 백그라운드 렌더
+      // ⑥ 다음 4페이지만 백그라운드 프리렌더 (메모리 절약 — LRU 캐시가 나머지 처리)
       setTimeout(async () => {
-        for (let i = 1; i < pdf.numPages; i++) {
-          setPdfRenderMsg(`백그라운드 렌더 ${i + 1}/${pdf.numPages}`);
+        const prefetchEnd = Math.min(5, pdf.numPages);
+        for (let i = 1; i < prefetchEnd; i++) {
+          setPdfRenderMsg(`미리 렌더 ${i + 1}/${pdf.numPages}`);
           await renderPdfPage(i);
         }
         setPdfRenderMsg(null);

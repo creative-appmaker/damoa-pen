@@ -1,14 +1,17 @@
 import React, { useState, useMemo } from 'react';
-import { Search, Settings, Plus, Pin, SortAsc } from 'lucide-react';
-import { PenNote } from '../types';
+import { Search, Settings, Plus, Pin, SortAsc, FolderOpen } from 'lucide-react';
+import { PenNote, Folder } from '../types';
 import { NoteCard } from './NoteCard';
 
 interface Props {
   notes: PenNote[];
+  folders?: Folder[];
   onNew: () => void;
   onEdit: (note: PenNote) => void;
   onDelete: (id: string) => void;
   onTogglePin: (note: PenNote) => void;
+  onMoveToFolder?: (note: PenNote, folderId: string | undefined) => void;
+  onOpenFolderPanel?: () => void;
   onSettings: () => void;
   darkMode: boolean;
 }
@@ -16,7 +19,8 @@ interface Props {
 type SortMode = 'updatedAt' | 'createdAt' | 'title';
 
 export const NoteList: React.FC<Props> = ({
-  notes, onNew, onEdit, onDelete, onTogglePin, onSettings, darkMode,
+  notes, folders, onNew, onEdit, onDelete, onTogglePin,
+  onMoveToFolder, onOpenFolderPanel, onSettings, darkMode,
 }) => {
   const [query, setQuery] = useState('');
   const [showPinnedOnly, setShowPinnedOnly] = useState(false);
@@ -30,7 +34,8 @@ export const NoteList: React.FC<Props> = ({
       const q = query.toLowerCase();
       list = list.filter(n =>
         n.title.toLowerCase().includes(q) ||
-        n.ocrText.toLowerCase().includes(q)
+        n.ocrText.toLowerCase().includes(q) ||
+        (n.pdfText ?? '').toLowerCase().includes(q)
       );
     }
     list.sort((a, b) => {
@@ -60,6 +65,13 @@ export const NoteList: React.FC<Props> = ({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {/* Folder panel button */}
+            {onOpenFolderPanel && (
+              <button type="button" onClick={onOpenFolderPanel}
+                className="w-9 h-9 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 dark:hover:bg-slate-700 cursor-pointer">
+                <FolderOpen className="w-4 h-4 text-purple-600"/>
+              </button>
+            )}
             {/* Sort */}
             <div className="relative">
               <button type="button" onClick={() => setShowSort(!showSort)}

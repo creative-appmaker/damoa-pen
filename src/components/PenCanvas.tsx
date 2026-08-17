@@ -2,13 +2,12 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Eraser, Trash2, Check, Sparkles,
   Hand, ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
+  FileText, FolderOpen, Tag,
 } from 'lucide-react';
-import { PenNote } from '../types';
+import { PenNote, Folder, PenType, StrokePoint, SavedStroke } from '../types';
 
 // ── Types ────────────────────────────────────────────────────────────────────
-interface Point { x: number; y: number; pressure: number; t?: number; }
-
-type PenType = 'pen' | 'fountain' | 'highlighter';
+type Point = StrokePoint; // StrokePoint와 동일, 로컬 별칭
 
 interface Stroke {
   id: string;
@@ -16,15 +15,26 @@ interface Stroke {
   color: string;
   size: number;
   penType: PenType;
-  fountainIntensity: number; // 0.5~2.5, only used when penType === 'fountain'
+  fountainIntensity: number;
 }
 
 interface Props {
   editingNote: PenNote | null;
   darkMode: boolean;
-  onSave: (dataUrl: string, ocrText: string, title: string, paperType: 'white'|'yellow'|'black', id?: string) => void;
+  folders?: Folder[];
+  onSave: (
+    dataUrl: string, ocrText: string, title: string,
+    paperType: 'white'|'yellow'|'black',
+    tags: string[], folderId?: string,
+    pdfBase64?: string, pdfText?: string, pdfPageCount?: number,
+    pageStrokes?: SavedStroke[][],
+    id?: string,
+  ) => void;
   onBack: () => void;
 }
+
+// 페이지 데이터 (bgImageUrl 제거 — PDF는 pdfDocRef + 메모리 캐시로 처리)
+interface Page { id: string; strokes: Stroke[]; }
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const COLOR_PALETTE = [
@@ -191,7 +201,7 @@ function appendSegment(
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
-export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBack }) => {
+export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, folders = [], onSave, onBack }) => {
   const baseCanvasRef   = useRef<HTMLCanvasElement | null>(null);
   const activeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef    = useRef<HTMLDivElement | null>(null);
@@ -199,8 +209,12 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
   const currentStrokeRef= useRef<Stroke | null>(null);
   const strokesRef      = useRef<Stroke[]>([]);
   const baseImageRef    = useRef<HTMLImageElement | null>(null);
+  const pageBgImageRef  = useRef<HTMLImageElement | null>(null); // 현재 페이지 PDF 렌더 캐시
   const cachedRectRef   = useRef<DOMRect | null>(null);
   const rafPendingRef   = useRef(false);
+  const pdfInputRef     = useRef<HTMLInputElement | null>(null);
+  const pdfDocRef       = useRef<any>(null);               // pdf.js PDFDocumentProxy
+  const pdfCacheRef     = useRef<Map<number, string>>(new Map()); // 인메모리 JPEG 캐시 (pageIdx → dataUrl)
 
   const initPT = editingNote?.paperType ?? (darkMode ? 'black' : 'white');
 
@@ -226,8 +240,22 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
   const [showPenMenu,       setShowPenMenu]       = useState(false);
   const [showEraserMenu,    setShowEraserMenu]    = useState(false);
   const [showPaperMenu,     setShowPaperMenu]     = useState(false);
-  const [pages,   setPages]   = useState([{ id: 'p1', strokes: [] as Stroke[] }]);
-  const [pageIdx, setPageIdx] = useState(0);
+  const [pages,        setPages]        = useState<Page[]>([{ id: 'p1', strokes: [] }]);
+  const [pageIdx,      setPageIdx]      = useState(0);
+  const [swipeHint,    setSwipeHint]    = useState<'idle'|'hinting'>('idle');
+  const [swipeProgress,setSwipeProgress]= useState(0); // 0~1
+  const [tags,          setTags]         = useState<string[]>(editingNote?.tags ?? []);
+  const [tagsInput,     setTagsInput]    = useState((editingNote?.tags ?? []).join(', '));
+  const [noteFolderId,  setNoteFolderId] = useState<string | undefined>(editingNote?.folderId);
+  const [showNoteInfo,  setShowNoteInfo] = useState(false);
+  const [loadingPdf,    setLoadingPdf]   = useState(false);
+  const [pdfBase64,     setPdfBase64]    = useState<string | undefined>(editingNote?.pdfBase64);
+  const [pdfText,       setPdfText]      = useState<string | undefined>(editingNote?.pdfText);
+  const [pdfPageCount,  setPdfPageCount] = useState<number | undefined>(editingNote?.pdfPageCount);
+  const [pdfRenderMsg,  setPdfRenderMsg] = useState<string | null>(null); // "3/40페이지 렌더링 중..."
+
+  const swipeTouchRef  = useRef<{ id: number; startX: number; startY: number; classified: boolean; isSwipe: boolean } | null>(null);
+  const addPageRef     = useRef<() => void>(() => {});
 
   const colorPickerRef = useRef<HTMLDivElement | null>(null);
   const sizePickerRef  = useRef<HTMLDivElement | null>(null);
@@ -274,11 +302,16 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
   const redrawBase = useCallback(() => {
     const canvas = baseCanvasRef.current;
     if (!canvas) return;
-    const dpr  = window.devicePixelRatio || 1;
+    const dpr  = Math.min(window.devicePixelRatio || 1, 2); // 2 초과 DPR 제한 → 대형 태블릿 빈 캔버스 방지
     const cssW = canvas.width / dpr, cssH = canvas.height / dpr;
     const ctx  = canvas.getContext('2d')!;
     ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.restore();
     drawBackground(ctx, cssW, cssH);
+    // PDF 페이지 배경 (종이색 위, 스트로크 아래)
+    if (pageBgImageRef.current) {
+      ctx.globalAlpha = 1;
+      ctx.drawImage(pageBgImageRef.current, 0, 0, cssW, cssH);
+    }
     if (baseImageRef.current) ctx.drawImage(baseImageRef.current, 0, 0, cssW, cssH);
     strokesRef.current.forEach(s => drawStroke(s, ctx));
   }, [drawBackground]);
@@ -290,16 +323,37 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
     ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0, 0, ac.width, ac.height); ctx.restore();
   }, []);
 
-  // Export for saving
+  // Export for saving — CSS 픽셀 크기로 내보내 대형 기기에서의 빈 캔버스 문제 방지
   const getExportDataUrl = (): string => {
-    const base = baseCanvasRef.current, active = activeCanvasRef.current;
-    if (!base) return '';
-    const tmp = document.createElement('canvas');
-    tmp.width = base.width; tmp.height = base.height;
-    const ctx = tmp.getContext('2d')!;
-    ctx.drawImage(base, 0, 0);
-    if (active) ctx.drawImage(active, 0, 0);
-    return tmp.toDataURL('image/png');
+    try {
+      const base = baseCanvasRef.current;
+      if (!base) return '';
+      const dpr = window.devicePixelRatio || 1;
+      // CSS 픽셀 크기 (물리 픽셀 아님) → 대형 태블릿에서 메모리 초과 방지
+      const cssW = Math.round(base.width  / dpr);
+      const cssH = Math.round(base.height / dpr);
+      if (cssW < 10 || cssH < 10) return '';
+      const tmp = document.createElement('canvas');
+      tmp.width  = cssW;
+      tmp.height = cssH;
+      const ctx = tmp.getContext('2d')!;
+      // 흰색 배경 보장
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, cssW, cssH);
+      ctx.drawImage(base,   0, 0, base.width,   base.height,   0, 0, cssW, cssH);
+      const active = activeCanvasRef.current;
+      if (active) ctx.drawImage(active, 0, 0, active.width, active.height, 0, 0, cssW, cssH);
+      // PNG 대신 JPEG — 파일 크기 작고 toDataURL 실패율 낮음
+      const url = tmp.toDataURL('image/jpeg', 0.88);
+      if (!url || url.length < 200 || !url.startsWith('data:image')) {
+        console.error('[damoa-pen] getExportDataUrl: 빈 이미지 반환됨');
+        return '';
+      }
+      return url;
+    } catch (e) {
+      console.error('[damoa-pen] getExportDataUrl 실패:', e);
+      return '';
+    }
   };
 
   // ── Canvas init ─────────────────────────────────────────────────────────
@@ -308,7 +362,7 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
     if (!base || !active) return;
     const container = containerRef.current;
     const w = container?.clientWidth || 800, h = container?.clientHeight || 520;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2); // 최대 2x — Lenovo Y700 빈 캔버스 방지
     [base, active].forEach(c => {
       c.width = w * dpr; c.height = h * dpr;
       c.style.width = `${w}px`; c.style.height = `${h}px`;
@@ -319,22 +373,128 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
     redrawBase();
   }, [redrawBase]);
 
+  // ── PDF 헬퍼 ──────────────────────────────────────────────────────────────
+  /** 페이지 인덱스(0-based)를 JPEG dataUrl로 렌더. 메모리 캐시 우선. */
+  const renderPdfPage = useCallback(async (idx: number): Promise<string | null> => {
+    // 1. 메모리 캐시 확인
+    const hit = pdfCacheRef.current.get(idx);
+    if (hit) return hit;
+    // 2. pdf.js 렌더
+    if (!pdfDocRef.current) return null;
+    try {
+      const page = await pdfDocRef.current.getPage(idx + 1);
+      const container = containerRef.current;
+      const cssW = container?.clientWidth  || 800;
+      const cssH = container?.clientHeight || 600;
+      const vp0  = page.getViewport({ scale: 1 });
+      const scale = Math.min(cssW / vp0.width, cssH / vp0.height) * 1.5;
+      const vp = page.getViewport({ scale });
+      const c  = document.createElement('canvas');
+      c.width  = Math.round(vp.width);
+      c.height = Math.round(vp.height);
+      const ctx = c.getContext('2d')!;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      const jpeg = c.toDataURL('image/jpeg', 0.88);
+      pdfCacheRef.current.set(idx, jpeg);
+      return jpeg;
+    } catch (e) {
+      console.error(`[damoa-pen] PDF 페이지 ${idx+1} 렌더 실패:`, e);
+      return null;
+    }
+  }, []); // 의존성 없음 — ref만 사용
+
+  /** 페이지 idx를 렌더해서 캔버스 배경으로 표시 */
+  const loadPageBg = useCallback(async (idx: number) => {
+    const jpeg = await renderPdfPage(idx);
+    if (!jpeg) { pageBgImageRef.current = null; redrawBase(); return; }
+    const img = new Image();
+    img.onload = () => { pageBgImageRef.current = img; redrawBase(); };
+    img.src = jpeg;
+  }, [renderPdfPage, redrawBase]);
+
+  // ── pdf.js 초기화 헬퍼 ─────────────────────────────────────────────────
+  const initPdfJs = () => {
+    const lib = (window as any).pdfjsLib;
+    if (!lib) return null;
+    if (!lib.GlobalWorkerOptions.workerSrc) {
+      lib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+    return lib;
+  };
+
   // ── Load editing note ───────────────────────────────────────────────────
   useEffect(() => {
-    if (editingNote?.dataUrl) {
-      const img = new Image(); img.crossOrigin = 'anonymous';
-      img.onload = () => { baseImageRef.current = img; redrawBase(); };
-      img.src = editingNote.dataUrl;
+    // PDF/캐시 초기화
+    pdfDocRef.current = null;
+    pdfCacheRef.current.clear();
+    pageBgImageRef.current = null;
+
+    if (editingNote?.pdfBase64) {
+      // ── PDF 노트 복원 ──
+      const count = editingNote.pdfPageCount ?? 1;
+      setPdfBase64(editingNote.pdfBase64);
+      setPdfText(editingNote.pdfText);
+      setPdfPageCount(count);
+
+      // 페이지 구조 + 손글씨 복원
+      const restored: Page[] = Array.from({ length: count }, (_, i) => ({
+        id: `p-pdf-${i+1}`,
+        strokes: (editingNote.pageStrokes?.[i] ?? []) as Stroke[],
+      }));
+      setPages(restored);
+      setPageIdx(0);
+      strokesRef.current = restored[0]?.strokes ?? [];
+      baseImageRef.current = null;
+
+      // pdf.js로 로드 후 1페이지 즉시 렌더, 나머지 백그라운드
+      const pdfjsLib = initPdfJs();
+      if (pdfjsLib) {
+        const binary = atob(editingNote.pdfBase64);
+        const bytes  = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        pdfjsLib.getDocument({ data: bytes.buffer }).promise
+          .then(async (pdf: any) => {
+            pdfDocRef.current = pdf;
+            await loadPageBg(0);
+            // 백그라운드: 나머지 페이지 렌더
+            for (let i = 1; i < count; i++) {
+              setPdfRenderMsg(`PDF 백그라운드 렌더 ${i+1}/${count}...`);
+              await renderPdfPage(i);
+            }
+            setPdfRenderMsg(null);
+          })
+          .catch((e: Error) => console.error('[damoa-pen] PDF 로드 실패:', e));
+      }
     } else {
-      baseImageRef.current = null; strokesRef.current = [];
+      // ── 일반 손글씨 노트 ──
+      setPdfBase64(undefined); setPdfText(undefined); setPdfPageCount(undefined);
+      setPages([{ id: 'p1', strokes: [] }]);
+      setPageIdx(0);
+
+      if (editingNote?.dataUrl) {
+        const img = new Image(); img.crossOrigin = 'anonymous';
+        img.onload = () => { baseImageRef.current = img; redrawBase(); };
+        img.src = editingNote.dataUrl;
+      } else {
+        baseImageRef.current = null; strokesRef.current = [];
+      }
     }
+
+    // 공통 메타 복원
     setOcrText(editingNote?.ocrText ?? '');
     setTitle(editingNote?.title ?? '');
+    setTags(editingNote?.tags ?? []);
+    setTagsInput((editingNote?.tags ?? []).join(', '));
+    setNoteFolderId(editingNote?.folderId);
     const pt = editingNote?.paperType ?? (darkMode ? 'black' : 'white');
     setPaperType(pt);
     setPenColor(pt === 'black' ? '#ffffff' : '#1c1917');
     live.current.paperType = pt;
-  }, [editingNote, darkMode, redrawBase]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingNote, darkMode]);
 
   useEffect(() => {
     initCanvas();
@@ -363,25 +523,92 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
     return () => { clearTimeout(t); document.removeEventListener('pointerdown', handler); };
   }, [showPaperMenu, showColorPicker, showSizePicker, showEraserMenu, showPenMenu]);
 
-  // ── Palm rejection (canvas only) ───────────────────────────────────────
+  // ── Palm rejection + 스와이프 새 페이지 ─────────────────────────────────
   useEffect(() => {
-    const block = (e: TouchEvent) => {
-      if (live.current.penOnlyMode) { e.preventDefault(); e.stopPropagation(); }
+    const container = containerRef.current;
+    if (!container) return;
+
+    // ① 컨테이너 수준에서 터치 분류: 스와이프 vs 팜
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) { swipeTouchRef.current = null; return; }
+      const t = e.touches[0];
+      swipeTouchRef.current = { id: t.identifier, startX: t.clientX, startY: t.clientY, classified: false, isSwipe: false };
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      const sr = swipeTouchRef.current;
+      if (!sr) return;
+      const touch = Array.from(e.touches).find(t => t.identifier === sr.id);
+      if (!touch) return;
+
+      const dx = touch.clientX - sr.startX;
+      const dy = touch.clientY - sr.startY;
+
+      if (!sr.classified && (Math.abs(dx) > 14 || Math.abs(dy) > 14)) {
+        // 오른쪽→왼쪽 스와이프 감지 (dx < 0 && 수평 지배)
+        sr.isSwipe = dx < -10 && Math.abs(dx) > Math.abs(dy) * 1.5;
+        sr.classified = true;
+      }
+
+      if (sr.classified && sr.isSwipe) {
+        // 스와이프 진행 시각 피드백
+        const prog = Math.min(1, Math.abs(dx) / 120);
+        setSwipeProgress(prog);
+        setSwipeHint('hinting');
+        e.preventDefault(); // 스크롤 방지
+      } else if (live.current.penOnlyMode) {
+        // 팜리젝션: 스와이프가 아닌 터치 차단
+        e.preventDefault();
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      const sr = swipeTouchRef.current;
+      if (!sr) return;
+      const touch = Array.from(e.changedTouches).find(t => t.identifier === sr.id);
+      if (touch && sr.isSwipe) {
+        const dx = touch.clientX - sr.startX;
+        if (dx < -80) {
+          // 스와이프 완성 → 새 페이지 추가
+          addPageRef.current();
+          setSwipeProgress(1);
+          setTimeout(() => { setSwipeHint('idle'); setSwipeProgress(0); }, 500);
+        } else {
+          setSwipeHint('idle'); setSwipeProgress(0);
+        }
+      } else {
+        setSwipeHint('idle'); setSwipeProgress(0);
+      }
+      swipeTouchRef.current = null;
+    };
+
+    container.addEventListener('touchstart',  onTouchStart, { passive: true });
+    container.addEventListener('touchmove',   onTouchMove,  { passive: false });
+    container.addEventListener('touchend',    onTouchEnd,   { passive: true });
+    container.addEventListener('touchcancel', onTouchEnd,   { passive: true });
+
+    // ② 캔버스 원소 자체에도 팜 차단 유지 (포인터 이벤트 레이어)
+    const blockCanvasTouch = (e: TouchEvent) => {
+      if (live.current.penOnlyMode) { e.preventDefault(); }
     };
     [baseCanvasRef.current, activeCanvasRef.current].forEach(c => {
       if (!c) return;
-      c.addEventListener('touchstart', block, { passive: false });
-      c.addEventListener('touchmove',  block, { passive: false });
-      c.addEventListener('touchend',   block, { passive: false });
+      c.addEventListener('touchstart', blockCanvasTouch, { passive: false });
+      c.addEventListener('touchmove',  blockCanvasTouch, { passive: false });
     });
+
     return () => {
+      container.removeEventListener('touchstart',  onTouchStart);
+      container.removeEventListener('touchmove',   onTouchMove);
+      container.removeEventListener('touchend',    onTouchEnd);
+      container.removeEventListener('touchcancel', onTouchEnd);
       [baseCanvasRef.current, activeCanvasRef.current].forEach(c => {
         if (!c) return;
-        c.removeEventListener('touchstart', block);
-        c.removeEventListener('touchmove',  block);
-        c.removeEventListener('touchend',   block);
+        c.removeEventListener('touchstart', blockCanvasTouch);
+        c.removeEventListener('touchmove',  blockCanvasTouch);
       });
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Eraser helper ───────────────────────────────────────────────────────
@@ -560,20 +787,54 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
 
   // ── Save ─────────────────────────────────────────────────────────────────
   const handleSave = async () => {
-    const rawUrl = getExportDataUrl();
-    if (!rawUrl) return;
+    let rawUrl = getExportDataUrl();
+    if (!rawUrl) {
+      // 내보내기 실패 시 기존 이미지 유지 (노트 비어버리는 에러 방지)
+      if (editingNote?.dataUrl) {
+        console.warn('[damoa-pen] 내보내기 실패 — 기존 이미지 유지');
+        rawUrl = editingNote.dataUrl;
+      } else {
+        return; // 신규 노트인데 내보내기 실패면 저장 안 함
+      }
+    }
     const dataUrl = await compress(rawUrl, 1200, 0.75);
+    if (!dataUrl || dataUrl.length < 200) {
+      console.error('[damoa-pen] compress 결과 비어있음, 저장 중단');
+      return;
+    }
     let finalOcr = ocrText;
     if (strokesRef.current.length > 0 && !ocrText) {
       try { const t = await handleOcr(dataUrl); if (t) finalOcr = t; } catch {}
     }
-    onSave(dataUrl, finalOcr, title, live.current.paperType, editingNote?.id);
+    // 태그 파싱
+    const finalTags = tagsInput.split(',').map(t => t.trim()).filter(Boolean);
+    if (finalTags.length) setTags(finalTags);
+    // 전체 페이지 스트로크 수집 (현재 페이지는 strokesRef로 최신화)
+    const allPageStrokes = pages.map((p, i) =>
+      i === live.current.pageIdx ? [...strokesRef.current] : p.strokes
+    ) as SavedStroke[][];
+    onSave(
+      dataUrl, finalOcr, title, live.current.paperType,
+      finalTags, noteFolderId,
+      pdfBase64, pdfText, pdfPageCount,
+      allPageStrokes.some(s => s.length > 0) ? allPageStrokes : undefined,
+      editingNote?.id,
+    );
   };
 
   // ── Pages ─────────────────────────────────────────────────────────────────
   const goToPage = (idx: number) => {
-    setPageIdx(idx); strokesRef.current = pages[idx]?.strokes || [];
-    baseImageRef.current = null; redrawBase(); clearActive();
+    setPageIdx(idx);
+    strokesRef.current = pages[idx]?.strokes || [];
+    baseImageRef.current = null;
+    if (pdfDocRef.current) {
+      // PDF 노트: 페이지 렌더 (캐시 있으면 즉시)
+      loadPageBg(idx);
+    } else {
+      pageBgImageRef.current = null;
+      redrawBase();
+    }
+    clearActive();
   };
   const addPage = () => {
     const newPg = { id: `p-${pages.length+1}`, strokes: [] as Stroke[] };
@@ -582,6 +843,72 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
     strokesRef.current = []; baseImageRef.current = null;
     redrawBase(); clearActive();
   };
+  addPageRef.current = addPage; // 스와이프 핸들러가 최신 addPage를 호출하도록
+
+  // ── PDF 임포트 (원본 방식) ───────────────────────────────────────────────
+  const importPdf = useCallback(async (file: File) => {
+    const pdfjsLib = initPdfJs();
+    if (!pdfjsLib) { alert('pdf.js가 로드되지 않았습니다. 인터넷 연결을 확인해주세요.'); return; }
+    setLoadingPdf(true);
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+
+      // ① PDF 원본 → base64 저장
+      const bytes = new Uint8Array(arrayBuffer);
+      let bin = '';
+      // 청크 단위로 변환 (스택 오버플로우 방지)
+      const CHUNK = 8192;
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+      }
+      const base64 = btoa(bin);
+
+      // ② pdf.js로 로드
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      pdfDocRef.current = pdf;
+      pdfCacheRef.current.clear();
+
+      // ③ 텍스트 추출 (getTextContent) — 모든 페이지
+      let extractedText = '';
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const pg = await pdf.getPage(i);
+        const tc = await pg.getTextContent();
+        extractedText += tc.items
+          .map((item: any) => ('str' in item ? item.str : ''))
+          .join(' ') + '\n';
+      }
+
+      // ④ 빈 페이지 구조 설정
+      const newPages: Page[] = Array.from({ length: pdf.numPages }, (_, i) => ({
+        id: `p-pdf-${i + 1}`, strokes: [],
+      }));
+      setPages(newPages);
+      setPageIdx(0);
+      setPdfBase64(base64);
+      setPdfText(extractedText.trim());
+      setPdfPageCount(pdf.numPages);
+      strokesRef.current = [];
+      baseImageRef.current = null;
+
+      // ⑤ 1페이지 즉시 렌더
+      await loadPageBg(0);
+      setTimeout(() => clearActive(), 30);
+
+      // ⑥ 나머지 페이지 백그라운드 렌더
+      setTimeout(async () => {
+        for (let i = 1; i < pdf.numPages; i++) {
+          setPdfRenderMsg(`백그라운드 렌더 ${i + 1}/${pdf.numPages}`);
+          await renderPdfPage(i);
+        }
+        setPdfRenderMsg(null);
+      }, 300);
+
+    } catch (e) {
+      alert('PDF 불러오기 실패: ' + (e as Error).message);
+    } finally {
+      setLoadingPdf(false);
+    }
+  }, [loadPageBg, renderPdfPage, clearActive]);
 
   const bgColor = paperType==='black'?'#1a1a1a':paperType==='yellow'?'#fef9c3':'#ffffff';
   const isHL = penType === 'highlighter';
@@ -907,7 +1234,70 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
             <Sparkles className="w-3.5 h-3.5"/>
             <span>{isOcrLoading?'판독중':ocrText?'AI완료':'AI인식'}</span>
           </button>
+
+          {/* ── PDF 임포트 ── */}
+          <button type="button" disabled={loadingPdf}
+            onClick={() => pdfInputRef.current?.click()}
+            className="font-extrabold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1 cursor-pointer shadow-sm bg-amber-500 hover:bg-amber-600 text-white shrink-0 disabled:opacity-50 active:scale-95">
+            <FileText className="w-3.5 h-3.5"/>
+            <span className="hidden sm:inline">{loadingPdf ? 'PDF 로딩...' : pdfBase64 ? 'PDF✓' : 'PDF'}</span>
+          </button>
+          <input ref={pdfInputRef} type="file" accept=".pdf" className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) importPdf(f); e.target.value = ''; }}/>
+
+          {/* ── 노트 정보 (태그/폴더) ── */}
+          <button type="button"
+            onClick={() => setShowNoteInfo(!showNoteInfo)}
+            className={`font-extrabold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1 cursor-pointer shadow-sm shrink-0 ${showNoteInfo?'bg-purple-600 text-white':'bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-300'}`}>
+            <Tag className="w-3.5 h-3.5"/>
+            <span className="hidden sm:inline">정보</span>
+          </button>
         </div>
+
+        {/* Row 3: 태그 / 폴더 (토글) */}
+        {showNoteInfo && (
+          <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-stone-200 dark:border-slate-700">
+            {/* 태그 입력 */}
+            <div className="flex items-center gap-1.5 flex-1 min-w-0">
+              <Tag className="w-3.5 h-3.5 text-purple-500 shrink-0"/>
+              <input
+                value={tagsInput}
+                onChange={e => setTagsInput(e.target.value)}
+                placeholder="태그 (쉼표로 구분: 월간지, 업무)"
+                inputMode="text"
+                className="flex-1 text-xs bg-stone-100 dark:bg-slate-800 rounded-xl px-2.5 py-1.5 outline-none text-stone-800 dark:text-slate-200 placeholder-stone-400"
+                style={{touchAction:'auto'}}
+                onPointerDown={e => e.stopPropagation()}
+                onClick={e => e.stopPropagation()}
+              />
+            </div>
+            {/* 폴더 선택 */}
+            {folders.length > 0 && (
+              <div className="flex items-center gap-1.5">
+                <FolderOpen className="w-3.5 h-3.5 text-purple-500 shrink-0"/>
+                <select
+                  value={noteFolderId ?? ''}
+                  onChange={e => setNoteFolderId(e.target.value || undefined)}
+                  className="text-xs bg-stone-100 dark:bg-slate-800 rounded-xl px-2 py-1.5 outline-none text-stone-800 dark:text-slate-200 cursor-pointer"
+                  style={{touchAction:'auto'}}
+                  onPointerDown={e => e.stopPropagation()}>
+                  <option value="">폴더 없음</option>
+                  {folders.map(f => (
+                    <option key={f.id} value={f.id}>{f.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {/* 현재 태그 뱃지 */}
+            {tags.length > 0 && (
+              <div className="flex gap-1 flex-wrap">
+                {tags.map(t => (
+                  <span key={t} className="px-2 py-0.5 bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 text-[10px] font-bold rounded-full">#{t}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* OCR message */}
@@ -915,6 +1305,13 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
         <div className="px-3 py-1.5 bg-purple-50 dark:bg-purple-950/40 border-b border-purple-200 text-xs font-bold text-purple-900 dark:text-purple-200 flex items-center justify-between gap-2">
           <span className="truncate">{ocrMsg}</span>
           <button type="button" onClick={() => setOcrMsg(null)} className="text-purple-400 hover:text-purple-700 font-black cursor-pointer shrink-0">✕</button>
+        </div>
+      )}
+      {/* PDF 백그라운드 렌더 진행 */}
+      {pdfRenderMsg && (
+        <div className="px-3 py-1 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 text-[11px] font-bold text-amber-700 dark:text-amber-300 flex items-center gap-2">
+          <span className="animate-pulse">⚡</span>
+          <span>{pdfRenderMsg} — 페이지 이동 시 즉시 표시됩니다</span>
         </div>
       )}
 
@@ -925,6 +1322,26 @@ export const PenCanvas: React.FC<Props> = ({ editingNote, darkMode, onSave, onBa
           style={{touchAction:'none', userSelect:'none', willChange:'transform'}}/>
         <canvas ref={activeCanvasRef} className="absolute inset-0 w-full h-full block"
           style={{touchAction:'none', userSelect:'none', willChange:'transform', background:'transparent'}}/>
+
+        {/* ── 스와이프 새 페이지 힌트 ── */}
+        {swipeHint === 'hinting' && (
+          <div className="absolute inset-y-0 right-0 flex items-center justify-end pointer-events-none"
+            style={{width:`${Math.max(60, swipeProgress * 200)}px`, opacity: Math.min(1, swipeProgress * 1.5)}}>
+            <div className="flex flex-col items-center gap-2 pr-4"
+              style={{transform:`translateX(${(1-swipeProgress)*40}px)`, transition:'transform 0.05s linear'}}>
+              <div className="text-2xl animate-bounce">←</div>
+              <div className="text-white font-black text-xs text-center leading-tight px-3 py-2 rounded-2xl shadow-xl"
+                style={{background:'rgba(124,58,237,0.85)', backdropFilter:'blur(4px)'}}>
+                오른쪽 빈공간에<br/>새 노트 추가합니다
+              </div>
+              {swipeProgress > 0.6 && (
+                <div className="text-white text-[10px] font-bold opacity-80">
+                  손 떼면 추가됩니다
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* OCR result */}

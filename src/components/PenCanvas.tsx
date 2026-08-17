@@ -279,6 +279,7 @@ export const PenCanvas: React.FC<Props> = ({
   const [pdfText,       setPdfText]      = useState<string | undefined>(editingNote?.pdfText);
   const [pdfPageCount,  setPdfPageCount] = useState<number | undefined>(editingNote?.pdfPageCount);
   const [pdfRenderMsg,  setPdfRenderMsg] = useState<string | null>(null); // "3/40페이지 렌더링 중..."
+  const [pdfInvert,     setPdfInvert]    = useState(false); // PDF 반전 보기
   const [pageImages,    setPageImages]   = useState<(string|undefined)[]>(editingNote?.pageImages ?? []);
 
   const swipeTouchRef  = useRef<{ id: number; startX: number; startY: number; startTime: number; classified: boolean; isSwipe: boolean } | null>(null);
@@ -1660,6 +1661,15 @@ export const PenCanvas: React.FC<Props> = ({
           <input ref={pdfInputRef} type="file" accept=".pdf" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) importPdf(f); e.target.value = ''; }}/>
 
+          {/* ── PDF 반전 ── */}
+          {pdfBase64 && (
+            <button type="button" title={pdfInvert ? 'PDF 반전 끄기' : 'PDF 반전 보기 (야간)'}
+              onClick={() => setPdfInvert(v => !v)}
+              className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shadow-sm text-white shrink-0 active:scale-95 ${pdfInvert ? 'bg-indigo-700 hover:bg-indigo-800 ring-2 ring-indigo-300' : 'bg-slate-600 hover:bg-slate-700'}`}>
+              <span className="text-sm leading-none">🌙</span>
+            </button>
+          )}
+
           {/* ── 사진 첨부 ── */}
           <div className="flex items-center gap-0.5">
             <button type="button" title={pageImages[pageIdx] ? '사진 첨부됨' : '사진 첨부'}
@@ -1800,6 +1810,7 @@ export const PenCanvas: React.FC<Props> = ({
             transform: `translate(${canvasXform.x}px,${canvasXform.y}px) scale(${canvasXform.scale})`,
             transformOrigin: '0 0',
             willChange: 'transform',
+            filter: pdfInvert ? 'invert(1) hue-rotate(180deg)' : undefined,
           }}>
           <canvas ref={baseCanvasRef} className="absolute inset-0 w-full h-full block"
             style={{touchAction:'none', userSelect:'none', willChange:'transform'}}/>

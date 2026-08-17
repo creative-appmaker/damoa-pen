@@ -367,10 +367,14 @@ export const PenCanvas: React.FC<Props> = ({
       ctx.globalAlpha = 1;
       ctx.drawImage(img, ix, iy, iw, ih);
     }
-    // PDF 페이지 배경 (종이색 위, 스트로크 아래)
+    // PDF 페이지 배경 (종이색 위, 스트로크 아래) — contain 방식으로 원본 비율 유지
     if (pageBgImageRef.current) {
+      const pi = pageBgImageRef.current;
+      const sc = Math.min(cssW / pi.naturalWidth, cssH / pi.naturalHeight);
+      const pw = pi.naturalWidth * sc, ph = pi.naturalHeight * sc;
+      const px = (cssW - pw) / 2; // 좌우 중앙
       ctx.globalAlpha = 1;
-      ctx.drawImage(pageBgImageRef.current, 0, 0, cssW, cssH);
+      ctx.drawImage(pi, px, 0, pw, ph); // 상단 정렬
     }
     if (baseImageRef.current) ctx.drawImage(baseImageRef.current, 0, 0, cssW, cssH);
     strokesRef.current.forEach(s => drawStroke(s, ctx));
@@ -1153,6 +1157,9 @@ export const PenCanvas: React.FC<Props> = ({
     clearActive();
   };
   const addPage = () => {
+    // 햅틱 피드백 (새 페이지 추가 확인)
+    try { navigator.vibrate?.(40); } catch {}
+    try { (window as any).Capacitor?.Plugins?.Haptics?.impact({ style: 'MEDIUM' }); } catch {}
     const newPg = { id: `p-${pages.length+1}`, strokes: [] as Stroke[] };
     const updated = [...pages, newPg]; setPages(updated);
     const ni = updated.length - 1; setPageIdx(ni);
@@ -1244,13 +1251,19 @@ export const PenCanvas: React.FC<Props> = ({
             {openTabs.map((tab, i) => (
               <div key={i} className="relative shrink-0">
                 <div
-                  className={`flex items-center gap-1 px-2 py-1.5 text-xs font-bold cursor-pointer border-b-2 transition-colors ${i === activeTabIdxProp ? 'bg-stone-100 dark:bg-slate-800 border-purple-500 text-stone-900 dark:text-white' : 'border-transparent text-stone-500 dark:text-slate-400 hover:bg-stone-100/60 dark:hover:bg-slate-800/60'}`}
-                  onClick={() => { onTabSwitch?.(i); }}>
-                  {/* 색상 점 (클릭 → 편집 팝업) */}
+                  className={`flex items-center gap-1 px-2 py-1.5 text-xs font-bold cursor-pointer border-b-2 transition-colors select-none ${i === activeTabIdxProp ? 'bg-stone-100 dark:bg-slate-800 border-purple-500 text-stone-900 dark:text-white' : 'border-transparent text-stone-500 dark:text-slate-400 hover:bg-stone-100/60 dark:hover:bg-slate-800/60'}`}
+                  onClick={() => { onTabSwitch?.(i); }}
+                  onPointerDown={e => {
+                    const t = setTimeout(() => { onTabEdit?.(i); }, 500);
+                    (e.currentTarget as any)._longPressTimer = t;
+                  }}
+                  onPointerUp={e => { clearTimeout((e.currentTarget as any)._longPressTimer); }}
+                  onPointerLeave={e => { clearTimeout((e.currentTarget as any)._longPressTimer); }}
+                  onPointerCancel={e => { clearTimeout((e.currentTarget as any)._longPressTimer); }}>
+                  {/* 색상 점 (표시용) */}
                   <span
-                    className="w-2.5 h-2.5 rounded-full shrink-0 ring-1 ring-white/40 cursor-pointer"
+                    className="w-2.5 h-2.5 rounded-full shrink-0 ring-1 ring-white/40"
                     style={{background: tab.color}}
-                    onClick={e => { e.stopPropagation(); onTabEdit?.(i); }}
                   />
                   {/* 제목 */}
                   <span className="max-w-[80px] truncate">{tab.title}</span>
@@ -1345,6 +1358,31 @@ export const PenCanvas: React.FC<Props> = ({
               <ChevronRight className="w-3.5 h-3.5 text-purple-600"/>
             </button>
           </div>
+
+          {/* ── 줌 잠금 (Row 1 — 항상 노출) ── */}
+          {(zoomEnabled || zoomLocked) && (
+            <button type="button" title={zoomLocked ? '줌 잠금 해제' : '현재 배율 고정'}
+              onClick={() => {
+                if (zoomLocked) {
+                  setZoomLocked(false);
+                  const id = { scale: 1, x: 0, y: 0 };
+                  canvasXformRef.current = id; setCanvasXform(id);
+                  cachedRectRef.current = null;
+                } else { setZoomLocked(true); }
+              }}
+              className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shrink-0 border ${zoomLocked?'bg-amber-100 dark:bg-amber-950/60 border-amber-400 text-amber-800':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-500 dark:text-slate-400'}`}>
+              {zoomLocked ? <Lock className="w-3.5 h-3.5"/> : <Unlock className="w-3.5 h-3.5"/>}
+            </button>
+          )}
+
+          {/* ── PDF 반전 (Row 1 — 항상 노출) ── */}
+          {pdfBase64 && (
+            <button type="button" title={pdfInvert ? 'PDF 반전 끄기' : 'PDF 반전 (야간)'}
+              onClick={() => setPdfInvert(v => !v)}
+              className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shrink-0 border text-sm leading-none ${pdfInvert?'bg-indigo-700 border-indigo-600 text-white':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-600 dark:text-slate-300'}`}>
+              🌙
+            </button>
+          )}
 
           <button type="button" onClick={() => setToolbarCollapsed(!toolbarCollapsed)}
             className="flex items-center gap-1 px-2 py-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-xl text-xs font-black cursor-pointer text-stone-700 dark:text-slate-200">
@@ -1624,26 +1662,6 @@ export const PenCanvas: React.FC<Props> = ({
             )}
           </button>
 
-          {/* ── 줌 잠금 ── */}
-          {(zoomEnabled || zoomLocked) && (
-            <button type="button" title={zoomLocked ? '줌 잠금 해제 (리셋)' : '현재 배율 고정'}
-              onClick={() => {
-                if (zoomLocked) {
-                  // 잠금 해제 + 리셋
-                  setZoomLocked(false);
-                  const id = { scale: 1, x: 0, y: 0 };
-                  canvasXformRef.current = id;
-                  setCanvasXform(id);
-                  cachedRectRef.current = null;
-                } else {
-                  setZoomLocked(true);
-                }
-              }}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${zoomLocked?'bg-amber-100 dark:bg-amber-950/60 border-amber-400 text-amber-800 dark:text-amber-200 ring-2 ring-amber-200':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-600 dark:text-slate-400'}`}>
-              {zoomLocked ? <Lock className="w-3.5 h-3.5"/> : <Unlock className="w-3.5 h-3.5"/>}
-            </button>
-          )}
-
           {/* ── OCR ── */}
           <button type="button" title={isOcrLoading ? '판독 중...' : ocrText ? 'AI 완료' : 'AI 인식'}
             disabled={isOcrLoading} onClick={() => handleOcr()}
@@ -1661,14 +1679,7 @@ export const PenCanvas: React.FC<Props> = ({
           <input ref={pdfInputRef} type="file" accept=".pdf" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) importPdf(f); e.target.value = ''; }}/>
 
-          {/* ── PDF 반전 ── */}
-          {pdfBase64 && (
-            <button type="button" title={pdfInvert ? 'PDF 반전 끄기' : 'PDF 반전 보기 (야간)'}
-              onClick={() => setPdfInvert(v => !v)}
-              className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shadow-sm text-white shrink-0 active:scale-95 ${pdfInvert ? 'bg-indigo-700 hover:bg-indigo-800 ring-2 ring-indigo-300' : 'bg-slate-600 hover:bg-slate-700'}`}>
-              <span className="text-sm leading-none">🌙</span>
-            </button>
-          )}
+          {/* PDF 반전은 Row 1로 이동 */}
 
           {/* ── 사진 첨부 ── */}
           <div className="flex items-center gap-0.5">

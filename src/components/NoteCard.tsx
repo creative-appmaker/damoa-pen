@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pin, Trash2, Edit2, FileText } from 'lucide-react';
+import { Pin, Trash2, FileText } from 'lucide-react';
 import { PenNote } from '../types';
 
 export type ViewMode = 'grid' | 'grid-large' | 'list' | 'compact';
@@ -55,8 +55,8 @@ export const NoteCard: React.FC<Props> = ({ note, viewMode, onEdit, onDeleteRequ
             <span className="text-[10px] text-stone-400 dark:text-slate-500 ml-auto font-bold shrink-0">{fmtDate(note.updatedAt)} {fmtTime(note.updatedAt)}</span>
           </div>
         </div>
-        {/* 액션 버튼 */}
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+        {/* 액션 버튼 — 터치 기기에서도 항상 표시 */}
+        <div className="flex items-center gap-1 shrink-0">
           <button type="button" onClick={e=>{e.stopPropagation();onTogglePin(note);}}
             className={`w-8 h-8 rounded-xl flex items-center justify-center cursor-pointer ${note.isPinned?'bg-amber-100 dark:bg-amber-900/40':'bg-stone-100 dark:bg-slate-800 hover:bg-stone-200'}`}>
             <Pin className={`w-3.5 h-3.5 ${note.isPinned?'text-amber-600 fill-amber-600':'text-stone-500'}`}/>
@@ -85,12 +85,11 @@ export const NoteCard: React.FC<Props> = ({ note, viewMode, onEdit, onDeleteRequ
               <Pin className="w-2 h-2 text-stone-900 fill-stone-900"/>
             </div>
           )}
-          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100">
-            <button type="button" onClick={e=>{e.stopPropagation();onDeleteRequest(note);}}
-              className="w-7 h-7 bg-red-500/90 rounded-lg flex items-center justify-center shadow cursor-pointer">
-              <Trash2 className="w-3.5 h-3.5 text-white"/>
-            </button>
-          </div>
+          {/* 삭제 버튼 — 항상 표시 */}
+          <button type="button" onClick={e=>{e.stopPropagation();onDeleteRequest(note);}}
+            className="absolute top-1 right-1 w-6 h-6 bg-black/40 hover:bg-red-500/90 rounded-lg flex items-center justify-center shadow cursor-pointer backdrop-blur-sm">
+            <Trash2 className="w-3 h-3 text-white"/>
+          </button>
         </div>
         <div className="px-1.5 py-1" style={{backgroundColor:bgColor}}>
           <div className="text-[10px] font-black truncate" style={{color:textColor}}>{note.title || '제목 없음'}</div>
@@ -115,23 +114,19 @@ export const NoteCard: React.FC<Props> = ({ note, viewMode, onEdit, onDeleteRequ
               <Pin className="w-3 h-3 text-stone-900 fill-stone-900"/>
             </div>
           )}
-          {hasPdf && (
-            <div className="absolute top-2 right-2 px-2 py-0.5 bg-amber-500 text-white rounded-lg text-[10px] font-black">PDF</div>
-          )}
-          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-            <button type="button" onClick={e=>{e.stopPropagation();onEdit(note);}}
-              className="w-10 h-10 bg-white/90 rounded-xl flex items-center justify-center shadow-lg cursor-pointer">
-              <Edit2 className="w-4 h-4 text-purple-600"/>
-            </button>
-            <button type="button" onClick={e=>{e.stopPropagation();onTogglePin(note);}}
-              className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-lg cursor-pointer ${note.isPinned?'bg-amber-400/90':'bg-white/90'}`}>
-              <Pin className={`w-4 h-4 ${note.isPinned?'text-stone-900 fill-stone-900':'text-amber-600'}`}/>
-            </button>
+          {/* 우상단: PDF 뱃지 or 삭제 버튼 */}
+          <div className="absolute top-2 right-2 flex items-center gap-1">
+            {hasPdf && <span className="px-2 py-0.5 bg-amber-500 text-white rounded-lg text-[10px] font-black">PDF</span>}
             <button type="button" onClick={e=>{e.stopPropagation();onDeleteRequest(note);}}
-              className="w-10 h-10 bg-red-500/90 rounded-xl flex items-center justify-center shadow-lg cursor-pointer">
-              <Trash2 className="w-4 h-4 text-white"/>
+              className="w-7 h-7 bg-black/40 hover:bg-red-500/90 rounded-lg flex items-center justify-center shadow cursor-pointer backdrop-blur-sm">
+              <Trash2 className="w-3.5 h-3.5 text-white"/>
             </button>
           </div>
+          {/* 고정 버튼 (핀) */}
+          <button type="button" onClick={e=>{e.stopPropagation();onTogglePin(note);}}
+            className={`absolute bottom-2 right-2 w-7 h-7 rounded-lg flex items-center justify-center shadow cursor-pointer backdrop-blur-sm ${note.isPinned?'bg-amber-400/90':'bg-black/30 hover:bg-black/50'}`}>
+            <Pin className={`w-3.5 h-3.5 ${note.isPinned?'text-stone-900 fill-stone-900':'text-white'}`}/>
+          </button>
         </div>
         <div className="px-3 py-2.5 flex-1" style={{backgroundColor:bgColor}}>
           <div className="text-sm font-black truncate mb-1" style={{color:textColor}}>{note.title || '제목 없음'}</div>
@@ -165,23 +160,19 @@ export const NoteCard: React.FC<Props> = ({ note, viewMode, onEdit, onDeleteRequ
             <Pin className="w-3 h-3 text-stone-900 fill-stone-900"/>
           </div>
         )}
-        {hasPdf && (
-          <div className="absolute top-2 right-2 px-1.5 py-0.5 bg-amber-500 text-white rounded-md text-[9px] font-black">PDF</div>
-        )}
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-          <button type="button" onClick={e=>{e.stopPropagation();onEdit(note);}}
-            className="w-9 h-9 bg-white/90 rounded-xl flex items-center justify-center shadow-lg cursor-pointer">
-            <Edit2 className="w-4 h-4 text-purple-600"/>
-          </button>
-          <button type="button" onClick={e=>{e.stopPropagation();onTogglePin(note);}}
-            className={`w-9 h-9 rounded-xl flex items-center justify-center shadow-lg cursor-pointer ${note.isPinned?'bg-amber-400/90':'bg-white/90'}`}>
-            <Pin className={`w-4 h-4 ${note.isPinned?'text-stone-900 fill-stone-900':'text-amber-600'}`}/>
-          </button>
+        {/* 우상단: PDF 뱃지 + 삭제 버튼 */}
+        <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5">
+          {hasPdf && <span className="px-1.5 py-0.5 bg-amber-500 text-white rounded-md text-[9px] font-black">PDF</span>}
           <button type="button" onClick={e=>{e.stopPropagation();onDeleteRequest(note);}}
-            className="w-9 h-9 bg-red-500/90 rounded-xl flex items-center justify-center shadow-lg cursor-pointer">
-            <Trash2 className="w-4 h-4 text-white"/>
+            className="w-6 h-6 bg-black/40 hover:bg-red-500/90 rounded-lg flex items-center justify-center shadow cursor-pointer backdrop-blur-sm">
+            <Trash2 className="w-3 h-3 text-white"/>
           </button>
         </div>
+        {/* 핀 버튼 */}
+        <button type="button" onClick={e=>{e.stopPropagation();onTogglePin(note);}}
+          className={`absolute bottom-1.5 right-1.5 w-6 h-6 rounded-lg flex items-center justify-center shadow cursor-pointer backdrop-blur-sm ${note.isPinned?'bg-amber-400/90':'bg-black/30 hover:bg-black/50'}`}>
+          <Pin className={`w-3 h-3 ${note.isPinned?'text-stone-900 fill-stone-900':'text-white'}`}/>
+        </button>
       </div>
       <div className="px-2.5 py-2 flex-1" style={{backgroundColor:bgColor}}>
         <div className="text-xs font-black truncate mb-0.5" style={{color:textColor}}>{note.title || '제목 없음'}</div>

@@ -231,13 +231,13 @@ export const PenCanvas: React.FC<Props> = ({
   const currentStrokeRef= useRef<Stroke | null>(null);
   const strokesRef      = useRef<Stroke[]>([]);
   const baseImageRef    = useRef<HTMLImageElement | null>(null);
-  const pageBgImageRef  = useRef<HTMLImageElement | null>(null); // 현재 페이지 PDF 렌더 캐시
+  const pageBgImageRef  = useRef<ImageBitmap | null>(null); // 현재 페이지 PDF 렌더 캐시 (ImageBitmap — 무손실)
   const cachedRectRef   = useRef<DOMRect | null>(null);
   const rafPendingRef   = useRef(false);
   const pdfInputRef     = useRef<HTMLInputElement | null>(null);
   const imgInputRef     = useRef<HTMLInputElement | null>(null); // 사진 첨부 input
   const pdfDocRef       = useRef<any>(null);               // pdf.js PDFDocumentProxy
-  const pdfCacheRef     = useRef<Map<number, string>>(new Map()); // 인메모리 JPEG 캐시 (pageIdx → dataUrl)
+  const pdfCacheRef     = useRef<Map<number, ImageBitmap>>(new Map()); // 인메모리 ImageBitmap 캐시 (무손실, GPU-backed)
   const pageUserImgRef  = useRef<HTMLImageElement | null>(null);  // 현재 페이지 첨부 사진
   const pageImagesRef   = useRef<(string|undefined)[]>([]); // 전체 페이지 첨부 사진 배열 (ref → stale 방지)
 
@@ -367,11 +367,11 @@ export const PenCanvas: React.FC<Props> = ({
       ctx.globalAlpha = 1;
       ctx.drawImage(img, ix, iy, iw, ih);
     }
-    // PDF 페이지 배경 (종이색 위, 스트로크 아래) — contain 방식으로 원본 비율 유지
+    // PDF 페이지 배경 (종이색 위, 스트로크 아래) — contain 방식으로 원본 비율 유지 (ImageBitmap 무손실)
     if (pageBgImageRef.current) {
-      const pi = pageBgImageRef.current;
-      const sc = Math.min(cssW / pi.naturalWidth, cssH / pi.naturalHeight);
-      const pw = pi.naturalWidth * sc, ph = pi.naturalHeight * sc;
+      const pi = pageBgImageRef.current; // ImageBitmap
+      const sc = Math.min(cssW / pi.width, cssH / pi.height); // .width/.height (ImageBitmap API)
+      const pw = pi.width * sc, ph = pi.height * sc;
       const px = (cssW - pw) / 2; // 좌우 중앙
       ctx.globalAlpha = 1;
       ctx.drawImage(pi, px, 0, pw, ph); // 상단 정렬
@@ -438,8 +438,12 @@ export const PenCanvas: React.FC<Props> = ({
   }, [redrawBase]);
 
   // ── PDF 헬퍼 ──────────────────────────────────────────────────────────────
-  /** 페이지 인덱스(0-based)를 JPEG dataUrl로 렌더. 메모리 캐시 우선. */
-  const renderPdfPage = useCallback(async (idx: number): Promise<string | null> => {
+  /**
+   * 페이지 인덱스(0-based)를 ImageBitmap으로 렌더. 메모리 캐시 우선.
+   * JPEG 인코딩을 없애고 GPU-backed ImageBitmap으로 직접 캐시 → 화질 무손실.
+   * 렌더 스케일 = DPR × (화면에 꽉 차도록) → 물리 픽셀 1:1 대응.
+   */
+  const renderPdfPage = useCallback(async (idx: number): Promise<ImageBitmap | null> => {
     // 1. 메모리 캐시 확인
     const hit = pdfCacheRef.current.get(idx);
     if (hit) return hit;
@@ -450,19 +454,22 @@ export const PenCanvas: React.FC<Props> = ({
       const container = containerRef.current;
       const cssW = container?.clientWidth  || 800;
       const cssH = container?.clientHeight || 600;
-      const vp0  = page.getViewport({ scale: 1 });
-      const scale = Math.min(cssW / vp0.width, cssH / vp0.height) * 1.5;
-      const vp = page.getViewport({ scale });
-      const c  = document.createElement('canvas');
+      // DPR을 곱해 물리 픽셀 해상도로 렌더 (최대 3배 제한)
+      const dpr   = Math.min(window.devicePixelRatio || 1, 3);
+      const vp0   = page.getViewport({ scale: 1 });
+      const scale = Math.min(cssW / vp0.width, cssH / vp0.height) * dpr;
+      const vp    = page.getViewport({ scale });
+      const c     = document.createElement('canvas');
       c.width  = Math.round(vp.width);
       c.height = Math.round(vp.height);
       const ctx = c.getContext('2d')!;
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, c.width, c.height);
       await page.render({ canvasContext: ctx, viewport: vp }).promise;
-      const jpeg = c.toDataURL('image/jpeg', 0.88);
-      pdfCacheRef.current.set(idx, jpeg);
-      return jpeg;
+      // JPEG 변환 없이 ImageBitmap으로 직접 추출 (무손실, GPU 전송)
+      const bmp = await createImageBitmap(c);
+      pdfCacheRef.current.set(idx, bmp);
+      return bmp;
     } catch (e) {
       console.error(`[damoa-pen] PDF 페이지 ${idx+1} 렌더 실패:`, e);
       return null;
@@ -471,11 +478,10 @@ export const PenCanvas: React.FC<Props> = ({
 
   /** 페이지 idx를 렌더해서 캔버스 배경으로 표시 */
   const loadPageBg = useCallback(async (idx: number) => {
-    const jpeg = await renderPdfPage(idx);
-    if (!jpeg) { pageBgImageRef.current = null; redrawBase(); return; }
-    const img = new Image();
-    img.onload = () => { pageBgImageRef.current = img; redrawBase(); };
-    img.src = jpeg;
+    const bmp = await renderPdfPage(idx);
+    if (!bmp) { pageBgImageRef.current = null; redrawBase(); return; }
+    pageBgImageRef.current = bmp;
+    redrawBase();
   }, [renderPdfPage, redrawBase]);
 
   // ── pdf.js 초기화 헬퍼 ─────────────────────────────────────────────────
@@ -491,9 +497,11 @@ export const PenCanvas: React.FC<Props> = ({
 
   // ── Load editing note ───────────────────────────────────────────────────
   useEffect(() => {
-    // PDF/캐시 초기화
+    // PDF/캐시 초기화 — ImageBitmap GPU 메모리 해제
     pdfDocRef.current = null;
+    pdfCacheRef.current.forEach(bmp => bmp.close());
     pdfCacheRef.current.clear();
+    pageBgImageRef.current?.close();
     pageBgImageRef.current = null;
 
     if (editingNote?.pdfBase64) {
@@ -1192,6 +1200,7 @@ export const PenCanvas: React.FC<Props> = ({
       // ② pdf.js로 로드
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       pdfDocRef.current = pdf;
+      pdfCacheRef.current.forEach(bmp => bmp.close());
       pdfCacheRef.current.clear();
 
       // ③ 텍스트 추출 (getTextContent) — 모든 페이지

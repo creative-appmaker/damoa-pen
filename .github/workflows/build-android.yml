@@ -55,10 +55,10 @@ jobs:
           }
           GRADLE
 
-      - name: Add ML Kit dependencies (Digital Ink only)
+      - name: Add ML Kit dependencies
         run: |
-          # Digital Ink Recognition만 추가 (Korean text-recognition 제거 → APK 경량화)
-          sed -i '/dependencies {/a\    implementation "com.google.mlkit:digital-ink-recognition:18.1.0"' android/app/build.gradle
+          # Digital Ink Recognition + Korean Text Recognition (이미지 기반 오프라인 OCR)
+          sed -i '/dependencies {/a\    implementation "com.google.mlkit:text-recognition-korean:16.0.1"\n    implementation "com.google.mlkit:digital-ink-recognition:18.1.0"' android/app/build.gradle
 
           echo "--- app/build.gradle dependencies ---"
           grep -A10 "dependencies {" android/app/build.gradle | head -20
@@ -71,6 +71,9 @@ jobs:
           cat > "$JAVA_DIR/InkRecognitionPlugin.java" << 'JAVA'
           package com.damoa.pen;
 
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.util.Base64;
           import com.getcapacitor.JSArray;
           import com.getcapacitor.JSObject;
           import com.getcapacitor.Plugin;
@@ -79,6 +82,7 @@ jobs:
           import com.getcapacitor.annotation.CapacitorPlugin;
           import com.google.mlkit.common.model.DownloadConditions;
           import com.google.mlkit.common.model.RemoteModelManager;
+          import com.google.mlkit.vision.common.InputImage;
           import com.google.mlkit.vision.digitalink.DigitalInkRecognition;
           import com.google.mlkit.vision.digitalink.DigitalInkRecognitionModel;
           import com.google.mlkit.vision.digitalink.DigitalInkRecognitionModelIdentifier;
@@ -86,6 +90,9 @@ jobs:
           import com.google.mlkit.vision.digitalink.DigitalInkRecognizerOptions;
           import com.google.mlkit.vision.digitalink.Ink;
           import com.google.mlkit.vision.digitalink.RecognitionCandidate;
+          import com.google.mlkit.vision.text.TextRecognition;
+          import com.google.mlkit.vision.text.TextRecognizer;
+          import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions;
           import org.json.JSONArray;
           import org.json.JSONObject;
 
@@ -168,6 +175,41 @@ jobs:
                                   })
                                   .addOnFailureListener(e2 ->
                                       call.reject("모델 다운로드 실패: " + e2.getMessage()));
+                          });
+                  } catch (Exception e) {
+                      call.reject(e.getMessage());
+                  }
+              }
+
+              @PluginMethod
+              public void recognizeImage(PluginCall call) {
+                  try {
+                      String base64 = call.getString("imageBase64");
+                      if (base64 == null || base64.isEmpty()) {
+                          call.reject("imageBase64 필요");
+                          return;
+                      }
+                      byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
+                      Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                      if (bitmap == null) {
+                          call.reject("이미지 디코딩 실패");
+                          return;
+                      }
+                      InputImage image = InputImage.fromBitmap(bitmap, 0);
+                      TextRecognizer recognizer = TextRecognition.getClient(
+                          new KoreanTextRecognizerOptions.Builder().build());
+                      recognizer.process(image)
+                          .addOnSuccessListener(result -> {
+                              JSObject ret = new JSObject();
+                              ret.put("text", result.getText());
+                              recognizer.close();
+                              bitmap.recycle();
+                              call.resolve(ret);
+                          })
+                          .addOnFailureListener(e -> {
+                              recognizer.close();
+                              bitmap.recycle();
+                              call.reject(e.getMessage());
                           });
                   } catch (Exception e) {
                       call.reject(e.getMessage());

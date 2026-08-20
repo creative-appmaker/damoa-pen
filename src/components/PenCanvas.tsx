@@ -1112,27 +1112,67 @@ export const PenCanvas: React.FC<Props> = ({
       i === live.current.pageIdx ? [...strokesRef.current] : p.strokes
     ) as SavedStroke[][];
 
-    // ── 전체 페이지 OCR (모든 페이지 스트로크를 순서대로 인식) ──
+    // ── 전체 페이지 OCR ──────────────────────────────────────────────────────
     setIsOcrLoading(true);
     setOcrMsg('📄 전체 페이지 인식 중...');
     const { isNativeAndroid } = await import('../lib/mlkitOcr');
     const useInk = isNativeAndroid();
-    const { runInkOcr } = useInk ? await import('../lib/inkOcr') : { runInkOcr: null as any };
+    const { runInkOcr, runMlKitImageOcr, extractHandwritingImage, runCloudVisionOcr } = await import('../lib/inkOcr');
+
+    // Cloud Vision 사용 가능 여부 (키 있고 인터넷 연결)
+    const visionApiKey = localStorage.getItem('damoa_vision_api_key') ?? '';
+    const useVision = !!visionApiKey && navigator.onLine;
 
     const pageOcrTexts: string[] = [];
     for (let pi = 0; pi < allPageStrokes.length; pi++) {
       const pgStrokes = allPageStrokes[pi];
       const existingText = editingNote?.pageOcrTexts?.[pi] ?? '';
-      // 현재 페이지: 항상 재인식. 다른 페이지: 스트로크 있으면 인식, 없으면 기존 텍스트 유지
       const shouldRecognize = pgStrokes.length > 0 && (pi === live.current.pageIdx || !existingText);
       if (!shouldRecognize) { pageOcrTexts.push(existingText); continue; }
       try {
+        let inkResult = existingText;
+
+        // 손글씨 이미지 (Digital Ink + 이미지 OCR 모두 사용)
+        const imgBase64 = extractHandwritingImage
+          ? extractHandwritingImage(pgStrokes as any, 1200, 1600)
+          : null;
+
+        // ① 오프라인 Digital Ink OCR (벡터 기반)
         if (useInk && runInkOcr) {
-          setOcrMsg(`📄 페이지 ${pi + 1}/${allPageStrokes.length} 인식 중...`);
-          const t = await runInkOcr(pgStrokes);
-          pageOcrTexts.push(t || existingText);
+          setOcrMsg(`📄 페이지 ${pi + 1}/${allPageStrokes.length} 벡터 인식 중...`);
+          inkResult = await runInkOcr(pgStrokes) || existingText;
+        }
+
+        // ② 오프라인 이미지 OCR (ML Kit Korean Text Recognition)
+        let imageOcrResult = '';
+        if (useInk && runMlKitImageOcr && imgBase64) {
+          setOcrMsg(`🖼 페이지 ${pi + 1}/${allPageStrokes.length} 이미지 인식 중...`);
+          try {
+            imageOcrResult = await runMlKitImageOcr(imgBase64);
+          } catch (ie) {
+            console.warn('[damoa-pen] ML Kit 이미지 OCR 실패:', ie);
+          }
+        }
+
+        // 두 오프라인 결과 병합 (검색용 → 모두 합침, 중복 제거)
+        const offlineText = [inkResult, imageOcrResult]
+          .filter(Boolean)
+          .join(' ')
+          .trim() || existingText;
+
+        // ③ Cloud Vision 보완 (인터넷 + 키 있을 때)
+        if (useVision && imgBase64 && runCloudVisionOcr) {
+          setOcrMsg(`🌐 페이지 ${pi + 1}/${allPageStrokes.length} Cloud Vision 보완 중...`);
+          try {
+            const visionResult = await runCloudVisionOcr(imgBase64, visionApiKey);
+            // 세 결과 모두 합산 (검색 재현율 최대화)
+            pageOcrTexts.push([offlineText, visionResult].filter(Boolean).join(' ').trim());
+          } catch (ve) {
+            console.warn('[damoa-pen] Cloud Vision 실패:', ve);
+            pageOcrTexts.push(offlineText);
+          }
         } else {
-          pageOcrTexts.push(existingText);
+          pageOcrTexts.push(offlineText);
         }
       } catch { pageOcrTexts.push(existingText); }
     }

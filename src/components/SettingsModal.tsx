@@ -19,8 +19,9 @@ type LockStep =
   | 'verify_old';    // verify existing lock before changing
 
 export const SettingsModal: React.FC<Props> = ({ onClose, darkMode, onToggleDark }) => {
-  const [apiKey, setApiKey] = useState('');
-  const [saved, setSaved] = useState(false);
+  const [apiKey,       setApiKey]       = useState('');
+  const [visionKey,    setVisionKey]    = useState('');
+  const [saved,        setSaved]        = useState(false);
   const [importMsg, setImportMsg] = useState('');
   const fileRef = React.useRef<HTMLInputElement>(null);
 
@@ -57,11 +58,14 @@ export const SettingsModal: React.FC<Props> = ({ onClose, darkMode, onToggleDark
 
   useEffect(() => {
     setApiKey(localStorage.getItem('damoa_gemini_api_key') || '');
+    setVisionKey(localStorage.getItem('damoa_vision_api_key') || '');
   }, []);
 
   const saveKey = () => {
     if (apiKey.trim()) localStorage.setItem('damoa_gemini_api_key', apiKey.trim());
     else localStorage.removeItem('damoa_gemini_api_key');
+    if (visionKey.trim()) localStorage.setItem('damoa_vision_api_key', visionKey.trim());
+    else localStorage.removeItem('damoa_vision_api_key');
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -222,6 +226,34 @@ export const SettingsModal: React.FC<Props> = ({ onClose, darkMode, onToggleDark
             </div>
             {apiKey && (
               <p className="text-[11px] text-emerald-600 font-bold mt-1.5">✅ API 키가 설정되어 있습니다.</p>
+            )}
+          </div>
+
+          {/* Google Cloud Vision API Key */}
+          <div>
+            <div className="text-xs font-extrabold text-stone-400 dark:text-slate-500 uppercase tracking-wider mb-1">
+              Google Cloud Vision API 키 (손글씨 보완 인식)
+            </div>
+            <p className="text-[11px] text-stone-400 dark:text-slate-500 mb-3">
+              인터넷 연결 시 저장할 때 손글씨를 Cloud Vision으로 추가 인식합니다.
+              오프라인 ML Kit 결과를 보완하며, 한국어 인식률이 크게 향상됩니다.{'\n'}
+              Google Cloud Console → Vision API 활성화 → API 키 생성 (월 1,000건 무료)
+            </p>
+            <div className="flex gap-2">
+              <div className="flex-1 flex items-center bg-stone-50 dark:bg-slate-800 border border-stone-200 dark:border-slate-700 rounded-2xl px-3 gap-2 overflow-hidden">
+                <Key className="w-4 h-4 text-blue-400 shrink-0"/>
+                <input type="password" value={visionKey} onChange={e=>setVisionKey(e.target.value)}
+                  placeholder="AIzaSy..."
+                  className="flex-1 bg-transparent text-sm font-mono outline-none py-3 text-stone-800 dark:text-slate-200 placeholder-stone-300"
+                  style={{touchAction:'auto'}} onPointerDown={e=>e.stopPropagation()}/>
+              </div>
+              <button type="button" onClick={saveKey}
+                className={`px-4 rounded-2xl font-black text-sm cursor-pointer flex items-center gap-1.5 ${saved?'bg-emerald-500 text-white':'bg-blue-600 hover:bg-blue-700 text-white'}`}>
+                {saved ? <><Check className="w-4 h-4"/>저장됨</> : '저장'}
+              </button>
+            </div>
+            {visionKey && (
+              <p className="text-[11px] text-emerald-600 font-bold mt-1.5">✅ Cloud Vision 키 설정됨 — 저장 시 자동으로 보완 인식합니다.</p>
             )}
           </div>
 

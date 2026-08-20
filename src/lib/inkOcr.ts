@@ -175,9 +175,100 @@ export async function runInkOcr(
 }
 
 /**
+ * ML Kit Korean Text Recognition (이미지 기반, 오프라인)
+ * extractHandwritingImage()로 만든 base64 JPEG를 네이티브 플러그인에 전달해 텍스트 추출.
+ */
+export async function runMlKitImageOcr(
+  imageBase64: string,
+): Promise<string> {
+  const plugin = getInkPlugin();
+  const result = await plugin.recognizeImage({ imageBase64 });
+  return (result?.text ?? '').trim();
+}
+
+/**
  * 한국어 디지털 잉크 모델 미리 다운로드
  */
 export async function downloadInkModel(languageCode = 'ko-KR'): Promise<void> {
   const plugin = getInkPlugin();
   await plugin.downloadModel({ languageCode });
+}
+
+// ── 이미지 기반 OCR (Google Cloud Vision) ────────────────────────────────────
+
+export interface StrokeForImage {
+  points: Array<{ x: number; y: number; pressure: number; t?: number }>;
+  color: string;
+  size: number;
+  penType?: string;
+  opacity?: number;
+}
+
+/**
+ * 손글씨 스트로크만 흰 배경 캔버스에 그려 JPEG base64 반환.
+ * PDF 배경·종이색·줄은 제외 → OCR 노이즈 최소화.
+ * 형광펜(highlighter) 제외 옵션 적용.
+ */
+export function extractHandwritingImage(
+  strokes: StrokeForImage[],
+  canvasW = 1200,
+  canvasH = 1600,
+): string {
+  const c = document.createElement('canvas');
+  c.width  = canvasW;
+  c.height = canvasH;
+  const ctx = c.getContext('2d')!;
+
+  // 흰 배경
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvasW, canvasH);
+
+  // 형광펜 제외, 나머지 스트로크 그리기
+  for (const s of strokes) {
+    if (s.penType === 'highlighter') continue;
+    if (s.points.length < 2) continue;
+
+    ctx.beginPath();
+    ctx.strokeStyle = s.color || '#000000';
+    ctx.lineWidth   = Math.max(1, s.size);
+    ctx.lineCap     = 'round';
+    ctx.lineJoin    = 'round';
+    ctx.globalAlpha = 1;
+
+    ctx.moveTo(s.points[0].x, s.points[0].y);
+    for (let i = 1; i < s.points.length; i++) {
+      ctx.lineTo(s.points[i].x, s.points[i].y);
+    }
+    ctx.stroke();
+  }
+
+  ctx.globalAlpha = 1;
+  return c.toDataURL('image/jpeg', 0.92).replace(/^data:image\/jpeg;base64,/, '');
+}
+
+/**
+ * Google Cloud Vision API로 손글씨 이미지 인식.
+ * DOCUMENT_TEXT_DETECTION 모드: 문서/손글씨에 최적화.
+ */
+export async function runCloudVisionOcr(
+  imageBase64: string,
+  apiKey: string,
+): Promise<string> {
+  const url = `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`;
+  const body = {
+    requests: [{
+      image: { content: imageBase64 },
+      features: [{ type: 'DOCUMENT_TEXT_DETECTION', maxResults: 1 }],
+      imageContext: { languageHints: ['ko', 'en'] },
+    }],
+  };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Cloud Vision HTTP ${res.status}`);
+  const data = await res.json();
+  const text = data.responses?.[0]?.fullTextAnnotation?.text ?? '';
+  return text.trim();
 }

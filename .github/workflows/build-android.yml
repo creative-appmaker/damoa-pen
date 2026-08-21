@@ -55,20 +55,16 @@ jobs:
           }
           GRADLE
 
-      - name: Add ML Kit dependencies
+      - name: Verify app/build.gradle
         run: |
-          # Digital Ink Recognition + Korean Text Recognition (이미지 기반 오프라인 OCR)
-          sed -i '/dependencies {/a\    implementation "com.google.mlkit:text-recognition-korean:16.0.1"\n    implementation "com.google.mlkit:digital-ink-recognition:18.1.0"' android/app/build.gradle
-
           echo "--- app/build.gradle dependencies ---"
           grep -A10 "dependencies {" android/app/build.gradle | head -20
 
-      - name: Create InkRecognition Capacitor plugin (Java)
+      - name: Setup palm rejection (gesture exclusion) in MainActivity
         run: |
-          JAVA_DIR="android/app/src/main/java/com/damoa/pen"
-          mkdir -p "$JAVA_DIR"
-
-          cat > "$JAVA_DIR/InkRecognitionPlugin.java" << 'JAVA'
+          # ML Kit 제거됨 — 팜리젝션(시스템 제스처 제외)만 유지
+          true
+          cat > /dev/null << 'JAVA'
           package com.damoa.pen;
 
           import android.graphics.Bitmap;
@@ -241,17 +237,12 @@ jobs:
           }
           JAVA
 
-          echo "✅ InkRecognitionPlugin.java 생성 완료"
-          ls -la "$JAVA_DIR/"
+          # (placeholder — plugin removed)
+          echo "ML Kit plugin 제거됨"
 
-      - name: Register InkRecognition plugin in MainActivity
+      - name: Apply palm rejection (gesture exclusion) in MainActivity
         run: |
           MAIN="android/app/src/main/java/com/damoa/pen/MainActivity.java"
-          echo "--- 원본 MainActivity.java ---"
-          cat "$MAIN"
-
-          # Capacitor 7은 기본 MainActivity에 onCreate가 없을 수 있으므로
-          # Python으로 안전하게 처리
           python3 << 'PYEOF'
           import re
 
@@ -259,7 +250,6 @@ jobs:
           with open(path, "r") as f:
               content = f.read()
 
-          # 팜리젝션: 전체 WebView를 시스템 제스처(뒤로가기 스와이프) 제외 영역으로 설정
           gesture_exclusion = (
               "        // 팜리젝션 — 전체 화면을 시스템 제스처 제외 영역으로 설정 (Android 10+)\n"
               "        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {\n"
@@ -272,30 +262,24 @@ jobs:
               "        }\n"
           )
 
-          if "registerPlugin(InkRecognitionPlugin.class)" in content:
-              print("이미 등록됨, 스킵")
+          if "setSystemGestureExclusionRects" in content:
+              print("이미 적용됨, 스킵")
           elif "super.onCreate" in content:
               content = content.replace(
                   "super.onCreate(savedInstanceState);",
-                  "registerPlugin(InkRecognitionPlugin.class);\n        super.onCreate(savedInstanceState);\n" + gesture_exclusion
+                  "super.onCreate(savedInstanceState);\n" + gesture_exclusion
               )
           else:
-              oncreate_body = (
-                  "registerPlugin(InkRecognitionPlugin.class);\n"
-                  "        super.onCreate(savedInstanceState);\n"
-                  + gesture_exclusion
-              )
               content = re.sub(
                   r'(public class MainActivity extends BridgeActivity\s*\{)',
-                  r'\1\n    @Override\n    public void onCreate(android.os.Bundle savedInstanceState) {\n        ' + oncreate_body.replace('\\', '\\\\') + '\n    }',
+                  r'\1\n    @Override\n    public void onCreate(android.os.Bundle savedInstanceState) {\n        super.onCreate(savedInstanceState);\n' + gesture_exclusion.replace('\\', '\\\\') + '    }',
                   content
               )
 
           with open(path, "w") as f:
               f.write(content)
-          print("완료")
+          print("팜리젝션 적용 완료")
           PYEOF
-
           echo "--- 수정된 MainActivity.java ---"
           cat "$MAIN"
 

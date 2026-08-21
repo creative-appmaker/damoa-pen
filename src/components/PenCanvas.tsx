@@ -999,35 +999,10 @@ export const PenCanvas: React.FC<Props> = ({
     redrawBase(); clearActive();
   };
 
-  // ── OCR ─────────────────────────────────────────────────────────────────
+  // ── OCR (Gemini 즉석 인식 버튼용) ──────────────────────────────────────
   const handleOcr = async (customDataUrl?: string) => {
     const dataUrl = customDataUrl || getExportDataUrl();
     if (!dataUrl || strokesRef.current.length === 0) { setOcrMsg('캔버스가 비어있습니다.'); return ''; }
-    const { isNativeAndroid } = await import('../lib/mlkitOcr');
-    if (isNativeAndroid()) {
-      // 1차 시도: ML Kit Digital Ink Recognition (스트로크 데이터 기반, 더 정확)
-      setIsOcrLoading(true); setOcrMsg('✨ ML Kit 필기 인식 중 (오프라인)...');
-      try {
-        const { runInkOcr } = await import('../lib/inkOcr');
-        const recognized = await runInkOcr(strokesRef.current);
-        if (recognized) {
-          setOcrText(recognized);
-          setOcrMsg(`✨ Ink 인식: "${recognized.slice(0, 50)}${recognized.length > 50 ? '...' : ''}"`);
-          setIsOcrLoading(false); return recognized;
-        }
-      } catch (inkErr) {
-        console.warn('Ink OCR 실패, 이미지 OCR로 폴백:', inkErr);
-      }
-      // 2차 폴백: 이미지 기반 ML Kit OCR
-      try {
-        const { runMlKitOcr } = await import('../lib/mlkitOcr');
-        const compressed = await compress(dataUrl, 1600, 0.85);
-        const recognized = await runMlKitOcr(compressed);
-        if (recognized) { setOcrText(recognized); setOcrMsg(`✨ ML Kit 이미지: "${recognized.slice(0,50)}..."`); }
-        else setOcrMsg('인식하지 못했습니다.');
-        setIsOcrLoading(false); return recognized;
-      } catch { setOcrMsg('ML Kit 오류'); setIsOcrLoading(false); return ''; }
-    }
     const apiKey = localStorage.getItem('damoa_gemini_api_key');
     if (!apiKey) { setOcrMsg('⚙️ 설정에서 Gemini API 키를 입력해주세요.'); return ''; }
     setIsOcrLoading(true); setOcrMsg('✨ Gemini AI 판독 중...');
@@ -1112,71 +1087,38 @@ export const PenCanvas: React.FC<Props> = ({
       i === live.current.pageIdx ? [...strokesRef.current] : p.strokes
     ) as SavedStroke[][];
 
-    // ── 전체 페이지 OCR ──────────────────────────────────────────────────────
-    setIsOcrLoading(true);
-    setOcrMsg('📄 전체 페이지 인식 중...');
-    const { isNativeAndroid } = await import('../lib/mlkitOcr');
-    const useInk = isNativeAndroid();
-    const { runInkOcr, runMlKitImageOcr, extractHandwritingImage, runCloudVisionOcr } = await import('../lib/inkOcr');
-
-    // Cloud Vision 사용 가능 여부 (키 있으면 시도 — Capacitor WebView에서 navigator.onLine 오작동 가능)
+    // ── 전체 페이지 OCR (Cloud Vision) ──────────────────────────────────────
     const visionApiKey = localStorage.getItem('damoa_vision_api_key') ?? '';
-    const useVision = !!visionApiKey;
-
     const pageOcrTexts: string[] = [];
-    for (let pi = 0; pi < allPageStrokes.length; pi++) {
-      const pgStrokes = allPageStrokes[pi];
-      const existingText = editingNote?.pageOcrTexts?.[pi] ?? '';
-      const shouldRecognize = pgStrokes.length > 0 && (pi === live.current.pageIdx || !existingText);
-      if (!shouldRecognize) { pageOcrTexts.push(existingText); continue; }
-      try {
-        let inkResult = existingText;
 
-        // 손글씨 이미지 생성 — 실제 캔버스 CSS 크기 기준 (좌표 범위 일치)
-        const canvasW = containerRef.current?.clientWidth  || 1200;
-        const canvasH = containerRef.current?.clientHeight || 1600;
-        const imgBase64 = extractHandwritingImage
-          ? extractHandwritingImage(pgStrokes as any, canvasW, canvasH)
-          : null;
+    if (visionApiKey) {
+      setIsOcrLoading(true);
+      const { extractHandwritingImage, runCloudVisionOcr } = await import('../lib/inkOcr');
+      const canvasW = containerRef.current?.clientWidth  || 1200;
+      const canvasH = containerRef.current?.clientHeight || 1600;
 
-        // ① Cloud Vision 우선 (테스트 모드 — 키 있을 때)
-        if (useVision && imgBase64 && runCloudVisionOcr) {
-          setOcrMsg(`🌐 페이지 ${pi + 1}/${allPageStrokes.length} Cloud Vision 인식 중...`);
-          try {
-            const visionResult = await runCloudVisionOcr(imgBase64, visionApiKey);
-            // [디버그] 결과 확인용 알림 — 테스트 후 제거 예정
-            alert(`[Cloud Vision 결과]\n"${visionResult || '(빈 결과)'}"`);
-            pageOcrTexts.push(visionResult || existingText);
-          } catch (ve) {
-            // [디버그] 에러 확인용 알림
-            alert(`[Cloud Vision 오류]\n${(ve as Error)?.message ?? String(ve)}`);
-            pageOcrTexts.push(existingText);
-          }
-          continue; // Digital Ink / 이미지 OCR 스킵
+      for (let pi = 0; pi < allPageStrokes.length; pi++) {
+        const pgStrokes = allPageStrokes[pi];
+        const existingText = editingNote?.pageOcrTexts?.[pi] ?? '';
+        const shouldRecognize = pgStrokes.length > 0 && (pi === live.current.pageIdx || !existingText);
+        if (!shouldRecognize) { pageOcrTexts.push(existingText); continue; }
+        try {
+          setOcrMsg(`🌐 페이지 ${pi + 1}/${allPageStrokes.length} 인식 중...`);
+          const imgBase64 = extractHandwritingImage(pgStrokes as any, canvasW, canvasH);
+          const result = await runCloudVisionOcr(imgBase64, visionApiKey);
+          pageOcrTexts.push(result || existingText);
+        } catch (e) {
+          console.warn('[damoa-pen] Cloud Vision 실패:', e);
+          pageOcrTexts.push(existingText);
         }
-
-        // ② 오프라인 Digital Ink OCR (벡터 기반) — Cloud Vision 없을 때만
-        if (useInk && runInkOcr) {
-          setOcrMsg(`📄 페이지 ${pi + 1}/${allPageStrokes.length} 벡터 인식 중...`);
-          inkResult = await runInkOcr(pgStrokes) || existingText;
-        }
-
-        // ③ 오프라인 이미지 OCR (ML Kit) — Cloud Vision 없을 때만
-        let imageOcrResult = '';
-        if (useInk && runMlKitImageOcr && imgBase64) {
-          setOcrMsg(`🖼 페이지 ${pi + 1}/${allPageStrokes.length} 이미지 인식 중...`);
-          try {
-            imageOcrResult = await runMlKitImageOcr(imgBase64);
-          } catch (ie) {
-            console.warn('[damoa-pen] ML Kit 이미지 OCR 실패:', ie);
-          }
-        }
-
-        const offlineText = [inkResult, imageOcrResult].filter(Boolean).join(' ').trim() || existingText;
-        pageOcrTexts.push(offlineText);
-      } catch { pageOcrTexts.push(existingText); }
+      }
+      setIsOcrLoading(false); setOcrMsg(null);
+    } else {
+      // API 키 없으면 기존 텍스트 유지
+      for (let pi = 0; pi < allPageStrokes.length; pi++) {
+        pageOcrTexts.push(editingNote?.pageOcrTexts?.[pi] ?? '');
+      }
     }
-    setIsOcrLoading(false); setOcrMsg(null);
 
     // 전체 OCR 텍스트 = 페이지별 합산 (검색용)
     const finalOcr = pageOcrTexts.filter(Boolean).join(' ');

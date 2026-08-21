@@ -213,15 +213,19 @@ export function extractHandwritingImage(
   strokes: StrokeForImage[],
   canvasW = 1200,
   canvasH = 1600,
+  scale = 2, // 업스케일 — Cloud Vision 인식률 향상
 ): string {
   const c = document.createElement('canvas');
-  c.width  = canvasW;
-  c.height = canvasH;
+  c.width  = canvasW * scale;
+  c.height = canvasH * scale;
   const ctx = c.getContext('2d')!;
 
   // 흰 배경
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, canvasW, canvasH);
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  // 좌표·선 굵기 2배 스케일
+  ctx.scale(scale, scale);
 
   // 형광펜 제외, 나머지 스트로크 그리기
   for (const s of strokes) {
@@ -229,8 +233,8 @@ export function extractHandwritingImage(
     if (s.points.length < 2) continue;
 
     ctx.beginPath();
-    ctx.strokeStyle = s.color || '#000000';
-    ctx.lineWidth   = Math.max(1, s.size);
+    ctx.strokeStyle = '#000000'; // 흑색 고정 — OCR 인식률 최대화
+    ctx.lineWidth   = Math.max(2, s.size); // 최소 2px 보장
     ctx.lineCap     = 'round';
     ctx.lineJoin    = 'round';
     ctx.globalAlpha = 1;
@@ -243,7 +247,7 @@ export function extractHandwritingImage(
   }
 
   ctx.globalAlpha = 1;
-  return c.toDataURL('image/jpeg', 0.92).replace(/^data:image\/jpeg;base64,/, '');
+  return c.toDataURL('image/jpeg', 0.95).replace(/^data:image\/jpeg;base64,/, '');
 }
 
 /**

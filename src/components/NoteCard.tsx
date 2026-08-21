@@ -25,6 +25,14 @@ export const NoteCard: React.FC<Props> = ({ note, viewMode, onEdit, onDeleteRequ
   const bgColor   = note.paperType==='black'?'#1a1a1a':note.paperType==='yellow'?'#fef9c3':'#ffffff';
   const textColor = note.paperType==='black'?'#e2e8f0':'#1c1917';
   const hasPdf    = !!note.pdfBase64;
+  const hasOcr    = !!(note.ocrText?.trim() || note.pageOcrTexts?.some(t => t?.trim()));
+  // 녹색: OCR 완료, 빨간색: 스트로크 있지만 OCR 없음
+  const hasStrokes = !!(note.pageStrokes?.some(p => p.length > 0));
+  const ocrDot = hasOcr
+    ? <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0 inline-block" title="OCR 완료"/>
+    : hasStrokes
+      ? <span className="w-2 h-2 rounded-full bg-red-500 shrink-0 inline-block" title="OCR 미완료"/>
+      : null;
 
   // ── LIST 뷰 ──────────────────────────────────────────────────────────────
   if (viewMode === 'list') {
@@ -43,6 +51,7 @@ export const NoteCard: React.FC<Props> = ({ note, viewMode, onEdit, onDeleteRequ
           <div className="flex items-center gap-1.5 mb-0.5">
             {note.isPinned && <Pin className="w-3 h-3 text-amber-500 fill-amber-500 shrink-0"/>}
             {hasPdf && <FileText className="w-3 h-3 text-amber-600 shrink-0"/>}
+            {ocrDot}
             <span className="text-sm font-black text-stone-900 dark:text-slate-100 truncate">{note.title || '제목 없음'}</span>
           </div>
           {note.ocrText && (
@@ -92,7 +101,7 @@ export const NoteCard: React.FC<Props> = ({ note, viewMode, onEdit, onDeleteRequ
           </button>
         </div>
         <div className="px-1.5 py-1" style={{backgroundColor:bgColor}}>
-          <div className="text-[10px] font-black truncate" style={{color:textColor}}>{note.title || '제목 없음'}</div>
+          <div className="flex items-center gap-1"><span>{ocrDot}</span><div className="text-[10px] font-black truncate" style={{color:textColor}}>{note.title || '제목 없음'}</div></div>
           <div className="text-[9px] opacity-50 font-bold" style={{color:textColor}}>{fmtDate(note.updatedAt)}</div>
         </div>
       </div>
@@ -129,7 +138,7 @@ export const NoteCard: React.FC<Props> = ({ note, viewMode, onEdit, onDeleteRequ
           </button>
         </div>
         <div className="px-3 py-2.5 flex-1" style={{backgroundColor:bgColor}}>
-          <div className="text-sm font-black truncate mb-1" style={{color:textColor}}>{note.title || '제목 없음'}</div>
+          <div className="flex items-center gap-1.5 mb-1">{ocrDot}<div className="text-sm font-black truncate" style={{color:textColor}}>{note.title || '제목 없음'}</div></div>
           {note.ocrText && (
             <p className="text-xs opacity-60 line-clamp-3 leading-snug mb-1.5" style={{color:textColor}}>{note.ocrText}</p>
           )}
@@ -175,7 +184,7 @@ export const NoteCard: React.FC<Props> = ({ note, viewMode, onEdit, onDeleteRequ
         </button>
       </div>
       <div className="px-2.5 py-2 flex-1" style={{backgroundColor:bgColor}}>
-        <div className="text-xs font-black truncate mb-0.5" style={{color:textColor}}>{note.title || '제목 없음'}</div>
+        <div className="flex items-center gap-1 mb-0.5">{ocrDot}<div className="text-xs font-black truncate" style={{color:textColor}}>{note.title || '제목 없음'}</div></div>
         {note.ocrText && (
           <div className="text-[10px] opacity-60 line-clamp-2 leading-tight mb-1" style={{color:textColor}}>{note.ocrText}</div>
         )}

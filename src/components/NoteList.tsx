@@ -175,7 +175,9 @@ export const NoteList: React.FC<Props> = ({
           <Search className="w-4 h-4 text-stone-400 dark:text-slate-500 shrink-0"/>
           <input value={query} onChange={e => setQuery(e.target.value)}
             placeholder="제목, 손글씨 텍스트 검색..."
-            className="flex-1 bg-transparent text-sm outline-none text-stone-800 dark:text-slate-200 placeholder-stone-400 font-medium"/>
+            className="flex-1 bg-transparent text-sm outline-none text-stone-800 dark:text-slate-200 placeholder-stone-400 font-medium"
+            style={{touchAction:'auto'}}
+            onPointerDown={e => e.stopPropagation()}/>
           {query && (
             <button type="button" onClick={() => setQuery('')} className="text-stone-400 hover:text-stone-600 cursor-pointer">
               <X className="w-4 h-4"/>

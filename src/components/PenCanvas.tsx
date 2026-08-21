@@ -1119,9 +1119,9 @@ export const PenCanvas: React.FC<Props> = ({
     const useInk = isNativeAndroid();
     const { runInkOcr, runMlKitImageOcr, extractHandwritingImage, runCloudVisionOcr } = await import('../lib/inkOcr');
 
-    // Cloud Vision 사용 가능 여부 (키 있고 인터넷 연결)
+    // Cloud Vision 사용 가능 여부 (키 있으면 시도 — Capacitor WebView에서 navigator.onLine 오작동 가능)
     const visionApiKey = localStorage.getItem('damoa_vision_api_key') ?? '';
-    const useVision = !!visionApiKey && navigator.onLine;
+    const useVision = !!visionApiKey;
 
     const pageOcrTexts: string[] = [];
     for (let pi = 0; pi < allPageStrokes.length; pi++) {
@@ -1132,9 +1132,11 @@ export const PenCanvas: React.FC<Props> = ({
       try {
         let inkResult = existingText;
 
-        // 손글씨 이미지 생성 (Cloud Vision / 이미지 OCR용)
+        // 손글씨 이미지 생성 — 실제 캔버스 CSS 크기 기준 (좌표 범위 일치)
+        const canvasW = containerRef.current?.clientWidth  || 1200;
+        const canvasH = containerRef.current?.clientHeight || 1600;
         const imgBase64 = extractHandwritingImage
-          ? extractHandwritingImage(pgStrokes as any, 1200, 1600)
+          ? extractHandwritingImage(pgStrokes as any, canvasW, canvasH)
           : null;
 
         // ① Cloud Vision 우선 (테스트 모드 — 인터넷 + 키 있을 때)

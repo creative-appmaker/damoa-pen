@@ -1139,14 +1139,17 @@ export const PenCanvas: React.FC<Props> = ({
           ? extractHandwritingImage(pgStrokes as any, canvasW, canvasH)
           : null;
 
-        // ① Cloud Vision 우선 (테스트 모드 — 인터넷 + 키 있을 때)
+        // ① Cloud Vision 우선 (테스트 모드 — 키 있을 때)
         if (useVision && imgBase64 && runCloudVisionOcr) {
           setOcrMsg(`🌐 페이지 ${pi + 1}/${allPageStrokes.length} Cloud Vision 인식 중...`);
           try {
             const visionResult = await runCloudVisionOcr(imgBase64, visionApiKey);
+            // [디버그] 결과 확인용 알림 — 테스트 후 제거 예정
+            alert(`[Cloud Vision 결과]\n"${visionResult || '(빈 결과)'}"`);
             pageOcrTexts.push(visionResult || existingText);
           } catch (ve) {
-            console.warn('[damoa-pen] Cloud Vision 실패, 기존 텍스트 유지:', ve);
+            // [디버그] 에러 확인용 알림
+            alert(`[Cloud Vision 오류]\n${(ve as Error)?.message ?? String(ve)}`);
             pageOcrTexts.push(existingText);
           }
           continue; // Digital Ink / 이미지 OCR 스킵

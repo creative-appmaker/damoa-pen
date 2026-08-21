@@ -1414,8 +1414,9 @@ export const PenCanvas: React.FC<Props> = ({
             placeholder="제목 (선택사항)"
             inputMode="text"
             className="flex-1 min-w-0 text-sm font-bold bg-transparent outline-none text-stone-800 dark:text-slate-100 placeholder-stone-300 dark:placeholder-slate-600 px-1 py-1"
-            style={{touchAction:'auto', pointerEvents:'auto'}}
+            style={{touchAction:'auto', pointerEvents:'auto', userSelect:'text', WebkitUserSelect:'text'} as React.CSSProperties}
             onPointerDown={e => e.stopPropagation()}
+            onTouchStart={e => e.stopPropagation()}
             onClick={e => e.stopPropagation()}
           />
 

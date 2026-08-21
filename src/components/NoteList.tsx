@@ -36,7 +36,9 @@ export const NoteList: React.FC<Props> = ({
   const [showPinnedOnly,setShowPinnedOnly]= useState(false);
   const [sortMode,      setSortMode]      = useState<SortMode>('updatedAt');
   const [showSort,      setShowSort]      = useState(false);
-  const [viewMode,      setViewMode]      = useState<ViewMode>('grid');
+  const [viewMode,      setViewMode]      = useState<ViewMode>(
+    () => (localStorage.getItem('damoa_view_mode') as ViewMode) || 'grid'
+  );
 
   // ── 삭제 확인 모달 ────────────────────────────────────────────────────────
   const [deleteTarget, setDeleteTarget] = useState<PenNote | null>(null);
@@ -131,7 +133,7 @@ export const NoteList: React.FC<Props> = ({
             <div className="flex items-center gap-0.5 bg-stone-100 dark:bg-slate-800 rounded-xl p-0.5">
               {VIEW_MODES.map(({ mode, icon, label }) => (
                 <button key={mode} type="button" title={label}
-                  onClick={() => setViewMode(mode)}
+                  onClick={() => { setViewMode(mode); localStorage.setItem('damoa_view_mode', mode); }}
                   className={`w-8 h-8 flex items-center justify-center rounded-lg cursor-pointer transition-all ${viewMode===mode?'bg-white dark:bg-slate-700 shadow-sm text-purple-600':'text-stone-500 dark:text-slate-400 hover:text-stone-700'}`}>
                   {icon}
                 </button>
@@ -175,9 +177,10 @@ export const NoteList: React.FC<Props> = ({
           <Search className="w-4 h-4 text-stone-400 dark:text-slate-500 shrink-0"/>
           <input value={query} onChange={e => setQuery(e.target.value)}
             placeholder="제목, 손글씨 텍스트 검색..."
-            className="flex-1 bg-transparent text-sm outline-none text-stone-800 dark:text-slate-200 placeholder-stone-400 font-medium"
-            style={{touchAction:'auto'}}
-            onPointerDown={e => e.stopPropagation()}/>
+            className="flex-1 bg-transparent text-sm outline-none text-stone-800 dark:text-slate-200 placeholder-stone-400 font-medium select-text"
+            style={{touchAction:'auto', userSelect:'text', WebkitUserSelect:'text'}}
+            onPointerDown={e => e.stopPropagation()}
+            onTouchStart={e => e.stopPropagation()}/>
           {query && (
             <button type="button" onClick={() => setQuery('')} className="text-stone-400 hover:text-stone-600 cursor-pointer">
               <X className="w-4 h-4"/>

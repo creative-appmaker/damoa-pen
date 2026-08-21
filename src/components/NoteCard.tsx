@@ -54,9 +54,7 @@ export const NoteCard: React.FC<Props> = ({ note, viewMode, onEdit, onDeleteRequ
             {ocrDot}
             <span className="text-sm font-black text-stone-900 dark:text-slate-100 truncate">{note.title || '제목 없음'}</span>
           </div>
-          {note.ocrText && (
-            <p className="text-[11px] text-stone-500 dark:text-slate-400 truncate leading-snug">{note.ocrText}</p>
-          )}
+          {/* OCR 텍스트 검색용으로만 사용 — 목록에는 표시 안 함 */}
           <div className="flex items-center gap-2 mt-1">
             {note.tags?.slice(0,3).map(t => (
               <span key={t} className="text-[10px] px-1.5 py-0.5 bg-purple-100 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300 rounded-full font-bold">#{t}</span>
@@ -139,9 +137,6 @@ export const NoteCard: React.FC<Props> = ({ note, viewMode, onEdit, onDeleteRequ
         </div>
         <div className="px-3 py-2.5 flex-1" style={{backgroundColor:bgColor}}>
           <div className="flex items-center gap-1.5 mb-1">{ocrDot}<div className="text-sm font-black truncate" style={{color:textColor}}>{note.title || '제목 없음'}</div></div>
-          {note.ocrText && (
-            <p className="text-xs opacity-60 line-clamp-3 leading-snug mb-1.5" style={{color:textColor}}>{note.ocrText}</p>
-          )}
           {note.tags && note.tags.length > 0 && (
             <div className="flex flex-wrap gap-1 mb-1.5">
               {note.tags.slice(0,4).map(t => (
@@ -185,9 +180,6 @@ export const NoteCard: React.FC<Props> = ({ note, viewMode, onEdit, onDeleteRequ
       </div>
       <div className="px-2.5 py-2 flex-1" style={{backgroundColor:bgColor}}>
         <div className="flex items-center gap-1 mb-0.5">{ocrDot}<div className="text-xs font-black truncate" style={{color:textColor}}>{note.title || '제목 없음'}</div></div>
-        {note.ocrText && (
-          <div className="text-[10px] opacity-60 line-clamp-2 leading-tight mb-1" style={{color:textColor}}>{note.ocrText}</div>
-        )}
         <div className="text-[10px] opacity-50 font-bold" style={{color:textColor}}>{fmtDate(note.updatedAt)} {fmtTime(note.updatedAt)}</div>
       </div>
     </div>

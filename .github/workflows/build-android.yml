@@ -259,19 +259,35 @@ jobs:
           with open(path, "r") as f:
               content = f.read()
 
+          # 팜리젝션: 전체 WebView를 시스템 제스처(뒤로가기 스와이프) 제외 영역으로 설정
+          gesture_exclusion = (
+              "        // 팜리젝션 — 전체 화면을 시스템 제스처 제외 영역으로 설정 (Android 10+)\n"
+              "        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {\n"
+              "            getBridge().getWebView().post(() -> {\n"
+              "                android.view.View wv = getBridge().getWebView();\n"
+              "                java.util.List<android.graphics.Rect> rects = new java.util.ArrayList<>();\n"
+              "                rects.add(new android.graphics.Rect(0, 0, wv.getWidth(), wv.getHeight()));\n"
+              "                wv.setSystemGestureExclusionRects(rects);\n"
+              "            });\n"
+              "        }\n"
+          )
+
           if "registerPlugin(InkRecognitionPlugin.class)" in content:
               print("이미 등록됨, 스킵")
           elif "super.onCreate" in content:
-              # onCreate가 있으면 그 앞에 삽입
               content = content.replace(
                   "super.onCreate(savedInstanceState);",
-                  "registerPlugin(InkRecognitionPlugin.class);\n        super.onCreate(savedInstanceState);"
+                  "registerPlugin(InkRecognitionPlugin.class);\n        super.onCreate(savedInstanceState);\n" + gesture_exclusion
               )
           else:
-              # onCreate가 없으면 클래스 바디에 주입
+              oncreate_body = (
+                  "registerPlugin(InkRecognitionPlugin.class);\n"
+                  "        super.onCreate(savedInstanceState);\n"
+                  + gesture_exclusion
+              )
               content = re.sub(
                   r'(public class MainActivity extends BridgeActivity\s*\{)',
-                  r'\1\n    @Override\n    public void onCreate(android.os.Bundle savedInstanceState) {\n        registerPlugin(InkRecognitionPlugin.class);\n        super.onCreate(savedInstanceState);\n    }',
+                  r'\1\n    @Override\n    public void onCreate(android.os.Bundle savedInstanceState) {\n        ' + oncreate_body.replace('\\', '\\\\') + '\n    }',
                   content
               )
 

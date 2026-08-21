@@ -1132,18 +1132,31 @@ export const PenCanvas: React.FC<Props> = ({
       try {
         let inkResult = existingText;
 
-        // 손글씨 이미지 (Digital Ink + 이미지 OCR 모두 사용)
+        // 손글씨 이미지 생성 (Cloud Vision / 이미지 OCR용)
         const imgBase64 = extractHandwritingImage
           ? extractHandwritingImage(pgStrokes as any, 1200, 1600)
           : null;
 
-        // ① 오프라인 Digital Ink OCR (벡터 기반)
+        // ① Cloud Vision 우선 (테스트 모드 — 인터넷 + 키 있을 때)
+        if (useVision && imgBase64 && runCloudVisionOcr) {
+          setOcrMsg(`🌐 페이지 ${pi + 1}/${allPageStrokes.length} Cloud Vision 인식 중...`);
+          try {
+            const visionResult = await runCloudVisionOcr(imgBase64, visionApiKey);
+            pageOcrTexts.push(visionResult || existingText);
+          } catch (ve) {
+            console.warn('[damoa-pen] Cloud Vision 실패, 기존 텍스트 유지:', ve);
+            pageOcrTexts.push(existingText);
+          }
+          continue; // Digital Ink / 이미지 OCR 스킵
+        }
+
+        // ② 오프라인 Digital Ink OCR (벡터 기반) — Cloud Vision 없을 때만
         if (useInk && runInkOcr) {
           setOcrMsg(`📄 페이지 ${pi + 1}/${allPageStrokes.length} 벡터 인식 중...`);
           inkResult = await runInkOcr(pgStrokes) || existingText;
         }
 
-        // ② 오프라인 이미지 OCR (ML Kit Korean Text Recognition)
+        // ③ 오프라인 이미지 OCR (ML Kit) — Cloud Vision 없을 때만
         let imageOcrResult = '';
         if (useInk && runMlKitImageOcr && imgBase64) {
           setOcrMsg(`🖼 페이지 ${pi + 1}/${allPageStrokes.length} 이미지 인식 중...`);
@@ -1154,26 +1167,8 @@ export const PenCanvas: React.FC<Props> = ({
           }
         }
 
-        // 두 오프라인 결과 병합 (검색용 → 모두 합침, 중복 제거)
-        const offlineText = [inkResult, imageOcrResult]
-          .filter(Boolean)
-          .join(' ')
-          .trim() || existingText;
-
-        // ③ Cloud Vision 보완 (인터넷 + 키 있을 때)
-        if (useVision && imgBase64 && runCloudVisionOcr) {
-          setOcrMsg(`🌐 페이지 ${pi + 1}/${allPageStrokes.length} Cloud Vision 보완 중...`);
-          try {
-            const visionResult = await runCloudVisionOcr(imgBase64, visionApiKey);
-            // 세 결과 모두 합산 (검색 재현율 최대화)
-            pageOcrTexts.push([offlineText, visionResult].filter(Boolean).join(' ').trim());
-          } catch (ve) {
-            console.warn('[damoa-pen] Cloud Vision 실패:', ve);
-            pageOcrTexts.push(offlineText);
-          }
-        } else {
-          pageOcrTexts.push(offlineText);
-        }
+        const offlineText = [inkResult, imageOcrResult].filter(Boolean).join(' ').trim() || existingText;
+        pageOcrTexts.push(offlineText);
       } catch { pageOcrTexts.push(existingText); }
     }
     setIsOcrLoading(false); setOcrMsg(null);

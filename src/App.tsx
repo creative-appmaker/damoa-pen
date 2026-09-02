@@ -161,7 +161,17 @@ export default function App() {
     await loadNotes();
   };
 
-  const handleBack = () => { setView('list'); setEditingNote(null); setOpenTabs([]); setActiveTabIdx(0); };
+  // 탭을 유지하면서 목록으로 돌아가기 (탭 삭제 안 함)
+  const handleBack = () => { setView('list'); };
+
+  // 스트로크 자동저장 (탭 전환 시 손글씨 유지)
+  const handleAutoSave = useCallback(async (noteId: string | undefined, pageStrokes: any[][]) => {
+    if (!noteId) return; // 새 노트는 자동저장 안 함
+    const note = notes.find(n => n.id === noteId);
+    if (!note) return;
+    await saveNote({ ...note, pageStrokes, updatedAt: Date.now() });
+    setNotes(prev => prev.map(n => n.id === noteId ? { ...n, pageStrokes } : n));
+  }, [notes]);
 
   // ── 탭 핸들러 ─────────────────────────────────────────────────────────────
   const handleTabSwitch = (idx: number) => {
@@ -384,6 +394,7 @@ export default function App() {
             onTabColorSet={handleTabColorSet}
             tabEditIdx={tabEditIdx}
             onNewTab={handleNewTab}
+            onAutoSave={handleAutoSave}
           />
         )}
       </div>

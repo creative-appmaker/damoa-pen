@@ -48,6 +48,7 @@ interface Props {
   onTabColorSet?: (idx: number, color: string) => void;
   tabEditIdx?: number | null;
   onNewTab?: () => void;
+  onAutoSave?: (noteId: string | undefined, strokes: SavedStroke[][]) => void;
 }
 
 // 페이지 데이터 (bgImageUrl 제거 — PDF는 pdfDocRef + 메모리 캐시로 처리)
@@ -223,6 +224,7 @@ export const PenCanvas: React.FC<Props> = ({
   initialSearchQuery,
   openTabs, activeTabIdx: activeTabIdxProp = 0,
   onTabSwitch, onTabClose, onTabColorCycle, onTabEdit, onTabTitleChange, onTabColorSet, tabEditIdx, onNewTab,
+  onAutoSave,
 }) => {
   const baseCanvasRef   = useRef<HTMLCanvasElement | null>(null);
   const activeCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -285,10 +287,12 @@ export const PenCanvas: React.FC<Props> = ({
   const [pdfInvert,     setPdfInvert]    = useState(false); // PDF 반전 보기
   const [pageImages,    setPageImages]   = useState<(string|undefined)[]>(editingNote?.pageImages ?? []);
 
-  const swipeTouchRef  = useRef<{ id: number; startX: number; startY: number; startTime: number; classified: boolean; isSwipe: boolean } | null>(null);
-  const addPageRef     = useRef<() => void>(() => {});
-  const goToPageRef    = useRef<(idx: number) => void>(() => {});
-  const pagesLenRef    = useRef<number>(1);
+  const swipeTouchRef          = useRef<{ id: number; startX: number; startY: number; startTime: number; classified: boolean; isSwipe: boolean } | null>(null);
+  const addPageRef             = useRef<() => void>(() => {});
+  const goToPageRef            = useRef<(idx: number) => void>(() => {});
+  const animatedGoToPageRef    = useRef<(idx: number) => void>(() => {});
+  const pagesLenRef            = useRef<number>(1);
+  const autoSaveTimerRef       = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const canvasWrapRef  = useRef<HTMLDivElement | null>(null);
   const pinchRef       = useRef<{ t1Id: number; t2Id: number; startDist: number; startScale: number; midCanvasX: number; midCanvasY: number } | null>(null);
   const canvasXformRef = useRef({ scale: 1, x: 0, y: 0 });
@@ -320,6 +324,8 @@ export const PenCanvas: React.FC<Props> = ({
     paperType: initPT as 'white'|'yellow'|'black', showLines: true, lineSpacing: 30,
     zoomEnabled: false,
     hlOpacity: 0.38, hlStraight: false,
+    pages: [] as Page[],
+    editingNoteId: undefined as string | undefined,
   });
   live.current.penOnlyMode        = penOnlyMode;
   live.current.penColor           = penColor;
@@ -336,6 +342,8 @@ export const PenCanvas: React.FC<Props> = ({
   live.current.zoomEnabled        = zoomEnabled;
   live.current.hlOpacity          = hlOpacity;
   live.current.hlStraight         = hlStraight;
+  live.current.pages              = pages;          // 자동저장용
+  live.current.editingNoteId      = editingNote?.id; // 자동저장용
   pageImagesRef.current           = pageImages; // stale closure 방지용 ref 동기화
 
   // ── Background ─────────────────────────────────────────────────────────
@@ -762,8 +770,21 @@ export const PenCanvas: React.FC<Props> = ({
 
       if (sr.classified && sr.isSwipe) {
         e.preventDefault(); // 스크롤 방지
-        // 왼쪽 스와이프 + 느린 경우(400ms 초과)만 힌트 표시 → 새 페이지 예정
-        if (dx < 0) {
+        const containerW = container.offsetWidth || 400;
+        const fraction = dx / containerW; // 양수 = 오른쪽(이전), 음수 = 왼쪽(다음)
+        const curIdx = live.current.pageIdx;
+        const canGoNext = curIdx < pagesLenRef.current - 1;
+        const canGoPrev = curIdx > 0;
+
+        // 페이지 이동 방향 → 고무줄 슬라이드 (최대 ±30%)
+        if ((dx < 0 && canGoNext) || (dx > 0 && canGoPrev)) {
+          const limited = Math.max(-30, Math.min(30, fraction * 100));
+          setSlideOffset(limited);
+          setSlideActive(false);
+        }
+
+        // 새 페이지 추가 힌트 (느린 왼쪽 스와이프, 마지막 페이지)
+        if (dx < 0 && !canGoNext) {
           const elapsed = Date.now() - sr.startTime;
           if (elapsed > 350) {
             const prog = Math.min(1, Math.abs(dx) / 120);
@@ -795,32 +816,48 @@ export const PenCanvas: React.FC<Props> = ({
         const dx = touch.clientX - sr.startX;
         const elapsed = Date.now() - sr.startTime;
         const absDx = Math.abs(dx);
+        const cur = live.current.pageIdx;
+
+        const snapBack = () => {
+          setSlideActive(true); setSlideOffset(0);
+          setTimeout(() => setSlideActive(false), 180);
+        };
 
         if (absDx > 60) {
           if (elapsed < 400) {
-            // ── 빠른 스와이프 → 페이지 이동 ──
-            if (dx < 0) {
-              // 왼쪽 → 다음 페이지
-              const cur = live.current.pageIdx;
-              if (cur < pagesLenRef.current - 1) goToPageRef.current(cur + 1);
+            // ── 빠른 스와이프 → 페이지 이동 (슬라이드 완료 후 전환) ──
+            if (dx < 0 && cur < pagesLenRef.current - 1) {
+              // 나머지 슬라이드 완료 → 페이지 전환 → 즉시 복귀
+              setSlideActive(true); setSlideOffset(-100);
+              setTimeout(() => {
+                goToPageRef.current(cur + 1);
+                setSlideActive(false); setSlideOffset(0);
+              }, 120);
+            } else if (dx > 0 && cur > 0) {
+              setSlideActive(true); setSlideOffset(100);
+              setTimeout(() => {
+                goToPageRef.current(cur - 1);
+                setSlideActive(false); setSlideOffset(0);
+              }, 120);
             } else {
-              // 오른쪽 → 이전 페이지
-              const cur = live.current.pageIdx;
-              if (cur > 0) goToPageRef.current(cur - 1);
+              snapBack();
             }
-            setSwipeHint('idle'); setSwipeProgress(0);
           } else if (dx < -80) {
             // ── 느린 왼쪽 스와이프 → 새 페이지 추가 ──
             addPageRef.current();
             setSwipeProgress(1);
+            snapBack();
             setTimeout(() => { setSwipeHint('idle'); setSwipeProgress(0); }, 500);
           } else {
-            setSwipeHint('idle'); setSwipeProgress(0);
+            snapBack();
           }
         } else {
-          setSwipeHint('idle'); setSwipeProgress(0);
+          snapBack();
         }
+        setSwipeHint('idle'); setSwipeProgress(0);
       } else {
+        setSlideActive(true); setSlideOffset(0);
+        setTimeout(() => setSlideActive(false), 180);
         setSwipeHint('idle'); setSwipeProgress(0);
       }
       swipeTouchRef.current = null;
@@ -981,6 +1018,16 @@ export const PenCanvas: React.FC<Props> = ({
         strokesRef.current.push(stroke);
         setPages(prev => prev.map((pg, i) => i === ci ? { ...pg, strokes: [...strokesRef.current] } : pg));
         currentStrokeRef.current = null;
+        // 자동 저장 (탭 전환 시 손글씨 유지) — 1.5초 디바운스
+        if (onAutoSave) {
+          clearTimeout(autoSaveTimerRef.current);
+          autoSaveTimerRef.current = setTimeout(() => {
+            const allStrokes = live.current.pages.map((pg: any, i: number) =>
+              i === live.current.pageIdx ? [...strokesRef.current] : [...pg.strokes]
+            );
+            onAutoSave(live.current.editingNoteId, allStrokes);
+          }, 1500);
+        }
         const base = baseCanvasRef.current;
         if (base) drawStroke(stroke, base.getContext('2d')!);
         clearActive();
@@ -1193,9 +1240,9 @@ export const PenCanvas: React.FC<Props> = ({
     pageUserImgRef.current = null; // 새 페이지는 사진 없음
     redrawBase(); clearActive();
   };
-  addPageRef.current  = addPage;  // 스와이프 핸들러가 최신 addPage를 호출하도록
-  goToPageRef.current = goToPage; // 스와이프 핸들러가 최신 goToPage를 호출하도록
-  pagesLenRef.current = pages.length; // 스와이프 핸들러에서 페이지 수 확인용
+  addPageRef.current          = addPage;
+  goToPageRef.current         = goToPage;
+  pagesLenRef.current         = pages.length;
 
   // ── 페이지 전환 슬라이드 애니메이션 ──────────────────────────────────────
   const animatedGoToPage = (idx: number) => {
@@ -1227,6 +1274,7 @@ export const PenCanvas: React.FC<Props> = ({
       });
     }, 150);
   };
+  animatedGoToPageRef.current = animatedGoToPage;
 
   // ── PDF 임포트 (원본 방식) ───────────────────────────────────────────────
   const importPdf = useCallback(async (file: File) => {
@@ -1856,13 +1904,6 @@ export const PenCanvas: React.FC<Props> = ({
         )}
       </div>
 
-      {/* OCR message */}
-      {ocrMsg && (
-        <div className="px-3 py-1.5 bg-purple-50 dark:bg-purple-950/40 border-b border-purple-200 text-xs font-bold text-purple-900 dark:text-purple-200 flex items-center justify-between gap-2">
-          <span className="truncate">{ocrMsg}</span>
-          <button type="button" onClick={() => setOcrMsg(null)} className="text-purple-400 hover:text-purple-700 font-black cursor-pointer shrink-0">✕</button>
-        </div>
-      )}
       {/* PDF 백그라운드 렌더 진행 */}
       {pdfRenderMsg && (
         <div className="px-3 py-1 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 text-[11px] font-bold text-amber-700 dark:text-amber-300 flex items-center gap-2">
@@ -1897,6 +1938,18 @@ export const PenCanvas: React.FC<Props> = ({
         </div>{/* /페이지 전환 슬라이드 wrapper */}
 
         {/* ── 스와이프 새 페이지 힌트 ── */}
+        {/* OCR 메시지 — 절대 위치 오버레이 (레이아웃 영향 없음) */}
+        {ocrMsg && (
+          <div className="absolute bottom-3 left-3 right-3 z-30 pointer-events-auto"
+            style={{animation:'fadeIn 0.2s ease'}}>
+            <div className="px-3 py-2 rounded-2xl shadow-lg flex items-center justify-between gap-2 text-xs font-bold"
+              style={{background:'rgba(124,58,237,0.92)', backdropFilter:'blur(8px)', color:'#fff'}}>
+              <span className="truncate">{ocrMsg}</span>
+              <button type="button" onClick={() => setOcrMsg(null)} className="text-white/70 hover:text-white font-black cursor-pointer shrink-0 text-sm">✕</button>
+            </div>
+          </div>
+        )}
+
         {swipeHint === 'hinting' && (
           <div className="absolute inset-y-0 right-0 flex items-center justify-end pointer-events-none"
             style={{width:`${Math.max(60, swipeProgress * 200)}px`, opacity: Math.min(1, swipeProgress * 1.5)}}>
@@ -1917,26 +1970,6 @@ export const PenCanvas: React.FC<Props> = ({
         )}
       </div>
 
-      {/* ── 페이지 스크러버 (3페이지 이상일 때 표시) ── */}
-      {pages.length > 2 && (
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-stone-50 dark:bg-slate-900 border-t border-stone-200 dark:border-slate-800"
-          style={{touchAction:'auto'}}
-          onPointerDown={e => e.stopPropagation()}>
-          <span className="text-[10px] font-bold text-stone-400 w-5 text-right shrink-0">1</span>
-          <input
-            type="range"
-            min={0}
-            max={pages.length - 1}
-            value={pageIdx}
-            onChange={e => goToPage(parseInt(e.target.value))}
-            className="flex-1 accent-purple-600 cursor-pointer"
-            style={{touchAction:'auto', height:'4px'}}
-            onPointerDown={e => e.stopPropagation()}
-          />
-          <span className="text-[10px] font-bold text-stone-400 w-5 shrink-0">{pages.length}</span>
-          <span className="text-[10px] font-black text-purple-600 shrink-0">{pageIdx+1}p</span>
-        </div>
-      )}
 
     </div>
   );

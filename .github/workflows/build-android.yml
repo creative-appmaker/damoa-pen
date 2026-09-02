@@ -306,6 +306,14 @@ jobs:
               "mipmap-xxhdpi":  144,
               "mipmap-xxxhdpi": 192,
           }
+          # 어댑티브 아이콘 foreground 크기 (108dp 기준)
+          fg_sizes = {
+              "mipmap-mdpi":    108,
+              "mipmap-hdpi":    162,
+              "mipmap-xhdpi":   216,
+              "mipmap-xxhdpi":  324,
+              "mipmap-xxxhdpi": 432,
+          }
 
           base = "android/app/src/main/res"
           for folder, size in sizes.items():
@@ -314,7 +322,14 @@ jobs:
               resized = icon.resize((size, size), Image.LANCZOS)
               resized.save(os.path.join(out_dir, "ic_launcher.png"), "PNG")
               resized.save(os.path.join(out_dir, "ic_launcher_round.png"), "PNG")
-              print(f"  {folder}: {size}x{size}")
+              # 어댑티브 아이콘 foreground도 교체 (Android 8+ 기기에서 실제로 보이는 아이콘)
+              fg_size = fg_sizes[folder]
+              fg = Image.new("RGBA", (fg_size, fg_size), (0, 0, 0, 0))
+              inner = icon.resize((int(fg_size * 0.75), int(fg_size * 0.75)), Image.LANCZOS)
+              offset = (fg_size - inner.width) // 2
+              fg.paste(inner, (offset, offset), inner)
+              fg.save(os.path.join(out_dir, "ic_launcher_foreground.png"), "PNG")
+              print(f"  {folder}: {size}x{size} (fg: {fg_size}x{fg_size})")
 
           print("✅ 아이콘 생성 완료")
           PYEOF

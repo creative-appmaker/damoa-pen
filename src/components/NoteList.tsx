@@ -232,6 +232,11 @@ export const NoteList: React.FC<Props> = ({
                 onEdit={n => onEdit(n, query.trim() || undefined)}
                 onDeleteRequest={setDeleteTarget}
                 onTogglePin={onTogglePin}
+                folders={folders}
+                onMoveToFolder={onMoveToFolder ? (noteId, folderId) => {
+                  const n = notes.find(x => x.id === noteId);
+                  if (n) onMoveToFolder(n, folderId);
+                } : undefined}
               />
             ))}
           </div>

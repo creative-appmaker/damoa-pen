@@ -260,6 +260,9 @@ export const PenCanvas: React.FC<Props> = ({
   const [ocrText,           setOcrText]           = useState(editingNote?.ocrText ?? '');
   const [isOcrLoading,      setIsOcrLoading]      = useState(false);
   const [ocrMsg,            setOcrMsg]            = useState<string | null>(null);
+  const [slideOffset,       setSlideOffset]       = useState(0);   // % translateX
+  const [slideActive,       setSlideActive]       = useState(false);
+  const pageTransitioning                         = useRef(false);
   const [toolbarCollapsed,  setToolbarCollapsed]  = useState(false);
   const [showColorPicker,   setShowColorPicker]   = useState(false);
   const [showSizePicker,    setShowSizePicker]    = useState(false);
@@ -653,6 +656,13 @@ export const PenCanvas: React.FC<Props> = ({
   }, [initCanvas, pageIdx]);
 
   useEffect(() => { redrawBase(); }, [paperType, showLines, lineSpacing, redrawBase]);
+
+  // ocrMsg 자동 숨기기 (5초 후)
+  useEffect(() => {
+    if (!ocrMsg) return;
+    const t = setTimeout(() => setOcrMsg(null), 5000);
+    return () => clearTimeout(t);
+  }, [ocrMsg]);
 
   // ── Close dropdowns ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -1112,7 +1122,9 @@ export const PenCanvas: React.FC<Props> = ({
           pageOcrTexts.push(existingText);
         }
       }
-      setIsOcrLoading(false); setOcrMsg(null);
+      setIsOcrLoading(false);
+      const preview = pageOcrTexts.find(t => t?.trim())?.slice(0, 60) ?? '';
+      setOcrMsg(preview ? `✅ 인식 완료: "${preview}${preview.length >= 60 ? '...' : ''}"` : null);
     } else {
       // API 키 없으면 기존 텍스트 유지
       for (let pi = 0; pi < allPageStrokes.length; pi++) {
@@ -1184,6 +1196,37 @@ export const PenCanvas: React.FC<Props> = ({
   addPageRef.current  = addPage;  // 스와이프 핸들러가 최신 addPage를 호출하도록
   goToPageRef.current = goToPage; // 스와이프 핸들러가 최신 goToPage를 호출하도록
   pagesLenRef.current = pages.length; // 스와이프 핸들러에서 페이지 수 확인용
+
+  // ── 페이지 전환 슬라이드 애니메이션 ──────────────────────────────────────
+  const animatedGoToPage = (idx: number) => {
+    if (idx === live.current.pageIdx || pageTransitioning.current) { goToPage(idx); return; }
+    pageTransitioning.current = true;
+    const dir = idx > live.current.pageIdx ? 1 : -1; // 1 = 다음, -1 = 이전
+
+    // 현재 페이지 슬라이드 아웃
+    setSlideActive(true);
+    setSlideOffset(dir * -100);
+
+    setTimeout(() => {
+      // 페이지 전환 (캔버스 즉시 재렌더)
+      goToPage(idx);
+      // 반대편에서 나타나도록 순간 이동 (transition 없이)
+      setSlideActive(false);
+      setSlideOffset(dir * 100);
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          // 슬라이드 인
+          setSlideActive(true);
+          setSlideOffset(0);
+          setTimeout(() => {
+            pageTransitioning.current = false;
+            setSlideActive(false);
+          }, 200);
+        });
+      });
+    }, 150);
+  };
 
   // ── PDF 임포트 (원본 방식) ───────────────────────────────────────────────
   const importPdf = useCallback(async (file: File) => {
@@ -1365,12 +1408,12 @@ export const PenCanvas: React.FC<Props> = ({
           {/* Page nav */}
           <div className="flex items-center bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-xl px-1.5 py-1 gap-1 shadow-sm"
             style={{touchAction:'auto'}}>
-            <button type="button" disabled={pageIdx===0} onClick={() => goToPage(pageIdx-1)}
+            <button type="button" disabled={pageIdx===0} onClick={() => animatedGoToPage(pageIdx-1)}
               className="p-0.5 disabled:opacity-30 hover:bg-stone-100 rounded cursor-pointer">
               <ChevronLeft className="w-3.5 h-3.5 text-purple-600"/>
             </button>
             <span className="text-[11px] font-black text-stone-700 dark:text-slate-200">{pageIdx+1}/{pages.length}</span>
-            <button type="button" onClick={() => pageIdx<pages.length-1?goToPage(pageIdx+1):addPage()}
+            <button type="button" onClick={() => pageIdx<pages.length-1?animatedGoToPage(pageIdx+1):addPage()}
               className="p-0.5 hover:bg-stone-100 rounded cursor-pointer">
               <ChevronRight className="w-3.5 h-3.5 text-purple-600"/>
             </button>
@@ -1831,6 +1874,12 @@ export const PenCanvas: React.FC<Props> = ({
       {/* ── Canvas ── */}
       <div ref={containerRef} className="relative w-full flex-1 overflow-hidden select-none"
         style={{touchAction:'none', overscrollBehavior:'none', backgroundColor:bgColor}}>
+        {/* 페이지 전환 슬라이드 wrapper */}
+        <div style={{
+          position: 'absolute', inset: 0,
+          transform: `translateX(${slideOffset}%)`,
+          transition: slideActive ? 'transform 0.15s ease-out' : 'none',
+        }}>
         {/* 줌/패닝 wrapper — CSS transform으로 확대/축소 처리, 캔버스 자체 해상도는 불변 */}
         <div ref={canvasWrapRef} className="absolute inset-0"
           style={{
@@ -1845,6 +1894,7 @@ export const PenCanvas: React.FC<Props> = ({
           <canvas ref={activeCanvasRef} className="absolute inset-0 w-full h-full block"
             style={{touchAction:'none', userSelect:'none', willChange:'transform', background:'transparent'}}/>
         </div>
+        </div>{/* /페이지 전환 슬라이드 wrapper */}
 
         {/* ── 스와이프 새 페이지 힌트 ── */}
         {swipeHint === 'hinting' && (
@@ -1888,19 +1938,6 @@ export const PenCanvas: React.FC<Props> = ({
         </div>
       )}
 
-      {/* OCR result */}
-      {ocrText && (
-        <div className="px-3 py-2 bg-blue-50 dark:bg-blue-950/30 border-t border-blue-200 dark:border-blue-800 text-xs text-blue-800 dark:text-blue-200 font-medium line-clamp-2">
-          ✍️ {ocrText}
-        </div>
-      )}
-
-      {/* Footer */}
-      <div className="flex items-center justify-between text-[10px] text-stone-400 dark:text-slate-500 font-bold px-2 py-1 bg-stone-50 dark:bg-slate-900 border-t border-stone-200 dark:border-slate-800">
-        <span className="hidden sm:inline">💡 {PEN_ICONS[penType]} {PEN_LABELS[penType]} {penSize}px | 저장 시 AI 자동 인식</span>
-        <span className="sm:hidden">💡 저장 시 AI 자동 인식</span>
-        <span>페이지 {pageIdx+1}/{pages.length}</span>
-      </div>
     </div>
   );
 };

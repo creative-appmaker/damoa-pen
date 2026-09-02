@@ -250,15 +250,22 @@ jobs:
           with open(path, "r") as f:
               content = f.read()
 
+          # OnGlobalLayoutListener로 WebView 실제 크기 확보 후 제스처 제외 적용
           gesture_exclusion = (
-              "        // 팜리젝션 — 전체 화면을 시스템 제스처 제외 영역으로 설정 (Android 10+)\n"
+              "        // 팜리젝션 — 레이아웃 완료 후 전체 화면을 시스템 제스처 제외 영역으로 설정 (Android 10+)\n"
               "        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {\n"
-              "            getBridge().getWebView().post(() -> {\n"
-              "                android.view.View wv = getBridge().getWebView();\n"
-              "                java.util.List<android.graphics.Rect> rects = new java.util.ArrayList<>();\n"
-              "                rects.add(new android.graphics.Rect(0, 0, wv.getWidth(), wv.getHeight()));\n"
-              "                wv.setSystemGestureExclusionRects(rects);\n"
-              "            });\n"
+              "            android.view.View wv = getBridge().getWebView();\n"
+              "            wv.getViewTreeObserver().addOnGlobalLayoutListener(\n"
+              "                new android.view.ViewTreeObserver.OnGlobalLayoutListener() {\n"
+              "                    @Override public void onGlobalLayout() {\n"
+              "                        if (wv.getWidth() > 0 && wv.getHeight() > 0) {\n"
+              "                            java.util.List<android.graphics.Rect> rects = new java.util.ArrayList<>();\n"
+              "                            rects.add(new android.graphics.Rect(0, 0, wv.getWidth(), wv.getHeight()));\n"
+              "                            wv.setSystemGestureExclusionRects(rects);\n"
+              "                            wv.getViewTreeObserver().removeOnGlobalLayoutListener(this);\n"
+              "                        }\n"
+              "                    }\n"
+              "                });\n"
               "        }\n"
           )
 
@@ -282,6 +289,35 @@ jobs:
           PYEOF
           echo "--- 수정된 MainActivity.java ---"
           cat "$MAIN"
+
+      - name: Generate app icons from resources/icon.png
+        run: |
+          pip install Pillow --break-system-packages -q
+          python3 << 'PYEOF'
+          from PIL import Image
+          import os
+
+          icon = Image.open("resources/icon.png").convert("RGBA")
+
+          sizes = {
+              "mipmap-mdpi":    48,
+              "mipmap-hdpi":    72,
+              "mipmap-xhdpi":   96,
+              "mipmap-xxhdpi":  144,
+              "mipmap-xxxhdpi": 192,
+          }
+
+          base = "android/app/src/main/res"
+          for folder, size in sizes.items():
+              out_dir = os.path.join(base, folder)
+              os.makedirs(out_dir, exist_ok=True)
+              resized = icon.resize((size, size), Image.LANCZOS)
+              resized.save(os.path.join(out_dir, "ic_launcher.png"), "PNG")
+              resized.save(os.path.join(out_dir, "ic_launcher_round.png"), "PNG")
+              print(f"  {folder}: {size}x{size}")
+
+          print("✅ 아이콘 생성 완료")
+          PYEOF
 
       - name: Sync Capacitor Android
         run: npx cap sync android

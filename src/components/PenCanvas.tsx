@@ -49,6 +49,8 @@ interface Props {
   tabEditIdx?: number | null;
   onNewTab?: () => void;
   onAutoSave?: (noteId: string | undefined, strokes: SavedStroke[][]) => void;
+  initialPageIdx?: number;
+  onPageChange?: (pageIdx: number) => void;
 }
 
 // 페이지 데이터 (bgImageUrl 제거 — PDF는 pdfDocRef + 메모리 캐시로 처리)
@@ -225,6 +227,8 @@ export const PenCanvas: React.FC<Props> = ({
   openTabs, activeTabIdx: activeTabIdxProp = 0,
   onTabSwitch, onTabClose, onTabColorCycle, onTabEdit, onTabTitleChange, onTabColorSet, tabEditIdx, onNewTab,
   onAutoSave,
+  initialPageIdx,
+  onPageChange,
 }) => {
   const baseCanvasRef   = useRef<HTMLCanvasElement | null>(null);
   const activeCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -550,12 +554,13 @@ export const PenCanvas: React.FC<Props> = ({
         id: `p-pdf-${i+1}`,
         strokes: (editingNote.pageStrokes?.[i] ?? []) as Stroke[],
       }));
+      const startPage = Math.min(initialPageIdx ?? 0, restored.length - 1);
       setPages(restored);
-      setPageIdx(0);
-      strokesRef.current = restored[0]?.strokes ?? [];
+      setPageIdx(startPage);
+      strokesRef.current = restored[startPage]?.strokes ?? [];
       baseImageRef.current = null;
 
-      // pdf.js로 로드 후 1페이지 즉시 렌더, 나머지 백그라운드
+      // pdf.js로 로드 후 시작 페이지 즉시 렌더, 나머지 백그라운드
       const pdfjsLib = initPdfJs();
       if (pdfjsLib) {
         const binary = atob(editingNote.pdfBase64);
@@ -564,7 +569,7 @@ export const PenCanvas: React.FC<Props> = ({
         pdfjsLib.getDocument({ data: bytes.buffer }).promise
           .then(async (pdf: any) => {
             pdfDocRef.current = pdf;
-            await loadPageBg(0);
+            await loadPageBg(startPage);
             // 백그라운드: 다음 4페이지만 미리 렌더 (메모리 절약)
             const prefetchEnd = Math.min(5, count);
             for (let i = 1; i < prefetchEnd; i++) {
@@ -588,9 +593,10 @@ export const PenCanvas: React.FC<Props> = ({
           id: `p${i + 1}`,
           strokes: s as Stroke[],
         }));
+        const startPage = Math.min(initialPageIdx ?? 0, restored.length - 1);
         setPages(restored);
-        setPageIdx(0);
-        strokesRef.current = (restored[0]?.strokes ?? []) as Stroke[];
+        setPageIdx(startPage);
+        strokesRef.current = (restored[startPage]?.strokes ?? []) as Stroke[];
         baseImageRef.current = null;
         redrawBase();
       } else if (editingNote?.dataUrl) {
@@ -695,7 +701,15 @@ export const PenCanvas: React.FC<Props> = ({
     const container = containerRef.current;
     if (!container) return;
 
-    // ① 컨테이너 수준에서 터치 분류: 스와이프 vs 팜 vs 핀치 줌
+    // ① 펜(스타일러스) 입력 추적 — 펜이면 스와이프 비활성화
+    const isPenActiveRef = { current: false };
+    const onPenDown = (e: PointerEvent) => { if (e.pointerType === 'pen') isPenActiveRef.current = true; };
+    const onPenUp   = (e: PointerEvent) => { if (e.pointerType === 'pen') isPenActiveRef.current = false; };
+    container.addEventListener('pointerdown', onPenDown, { passive: true });
+    container.addEventListener('pointerup',   onPenUp,   { passive: true });
+    container.addEventListener('pointercancel', onPenUp, { passive: true });
+
+    // ② 컨테이너 수준에서 터치 분류: 스와이프 vs 팜 vs 핀치 줌
     const onTouchStart = (e: TouchEvent) => {
       // 2-finger + zoomEnabled → 핀치 줌 시작
       if (e.touches.length === 2 && live.current.zoomEnabled) {
@@ -720,8 +734,12 @@ export const PenCanvas: React.FC<Props> = ({
         pinchRef.current = null;
         return;
       }
-      // 1-finger → 스와이프/팜 분류
+      // 1-finger → 스와이프/팜 분류 (펜 입력이면 스와이프 비활성)
       pinchRef.current = null;
+      if (isPenActiveRef.current) {
+        swipeTouchRef.current = null;
+        return;
+      }
       const t = e.touches[0];
       swipeTouchRef.current = {
         id: t.identifier, startX: t.clientX, startY: t.clientY,
@@ -879,6 +897,9 @@ export const PenCanvas: React.FC<Props> = ({
     });
 
     return () => {
+      container.removeEventListener('pointerdown',   onPenDown);
+      container.removeEventListener('pointerup',     onPenUp);
+      container.removeEventListener('pointercancel', onPenUp);
       container.removeEventListener('touchstart',  onTouchStart);
       container.removeEventListener('touchmove',   onTouchMove);
       container.removeEventListener('touchend',    onTouchEnd);
@@ -1209,6 +1230,7 @@ export const PenCanvas: React.FC<Props> = ({
   // ── Pages ─────────────────────────────────────────────────────────────────
   const goToPage = (idx: number) => {
     setPageIdx(idx);
+    onPageChange?.(idx);
     strokesRef.current = pages[idx]?.strokes || [];
     baseImageRef.current = null;
 

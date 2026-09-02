@@ -20,7 +20,7 @@ export default function App() {
   const [showSettings,setShowSettings]= useState(false);
 
   // ── 탭 시스템 ────────────────────────────────────────────────────────────
-  const [openTabs,    setOpenTabs]    = useState<Array<{noteId:string|null; title:string; color:string}>>([]);
+  const [openTabs,    setOpenTabs]    = useState<Array<{noteId:string|null; title:string; color:string; pageIdx:number}>>([]);
   const [activeTabIdx,setActiveTabIdx]= useState(0);
   const [tabEditIdx,  setTabEditIdx]  = useState<number | null>(null); // 탭 편집 팝업
   const [isLocked,    setIsLocked]    = useState(() => localStorage.getItem(LOCK_KEY) === 'true');
@@ -75,7 +75,7 @@ export default function App() {
   const handleNew = () => {
     const color = TAB_PALETTE[openTabs.length % TAB_PALETTE.length];
     const newIdx = openTabs.length;
-    setOpenTabs(prev => [...prev, { noteId: null, title: '새 노트', color }]);
+    setOpenTabs(prev => [...prev, { noteId: null, title: '새 노트', color, pageIdx: 0 }]);
     setActiveTabIdx(newIdx);
     setEditingNote(null);
     setView('canvas');
@@ -94,7 +94,7 @@ export default function App() {
     }
     const color = TAB_PALETTE[openTabs.length % TAB_PALETTE.length];
     const newIdx = openTabs.length;
-    setOpenTabs(prev => [...prev, { noteId: note.id, title: note.title, color }]);
+    setOpenTabs(prev => [...prev, { noteId: note.id, title: note.title, color, pageIdx: 0 }]);
     setActiveTabIdx(newIdx);
     setEditingNote(note);
     setView('canvas');
@@ -172,6 +172,11 @@ export default function App() {
     await saveNote({ ...note, pageStrokes, updatedAt: Date.now() });
     setNotes(prev => prev.map(n => n.id === noteId ? { ...n, pageStrokes } : n));
   }, [notes]);
+
+  // 현재 탭의 페이지 위치 저장
+  const handlePageChange = useCallback((pageIdx: number) => {
+    setOpenTabs(prev => prev.map((t, i) => i === activeTabIdx ? { ...t, pageIdx } : t));
+  }, [activeTabIdx]);
 
   // ── 탭 핸들러 ─────────────────────────────────────────────────────────────
   const handleTabSwitch = (idx: number) => {
@@ -395,6 +400,8 @@ export default function App() {
             tabEditIdx={tabEditIdx}
             onNewTab={handleNewTab}
             onAutoSave={handleAutoSave}
+            initialPageIdx={openTabs[activeTabIdx]?.pageIdx ?? 0}
+            onPageChange={handlePageChange}
           />
         )}
       </div>

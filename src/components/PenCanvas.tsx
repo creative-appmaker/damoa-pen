@@ -3,6 +3,7 @@ import {
   Eraser, Trash2, Check, Sparkles,
   Hand, ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
   FileText, FolderOpen, Tag, Lock, Unlock, Settings, X, Plus,
+  Undo2, Redo2, Search, Image as ImageIcon,
 } from 'lucide-react';
 import { PenNote, Folder, PenType, StrokePoint, SavedStroke, PenSettings } from '../types';
 
@@ -296,6 +297,9 @@ export const PenCanvas: React.FC<Props> = ({
   const animatedGoToPageRef    = useRef<(idx: number) => void>(() => {});
   const pagesLenRef            = useRef<number>(1);
   const autoSaveTimerRef       = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const undoHistoriesRef = useRef<Map<string, Stroke[][]>>(new Map());
+  const redoHistoriesRef = useRef<Map<string, Stroke[][]>>(new Map());
+  const eraserUndoPushedRef = useRef(false);
   const canvasWrapRef  = useRef<HTMLDivElement | null>(null);
   const pinchRef       = useRef<{ t1Id: number; t2Id: number; startDist: number; startScale: number; midCanvasX: number; midCanvasY: number } | null>(null);
   const canvasXformRef = useRef({ scale: 1, x: 0, y: 0 });
@@ -966,7 +970,19 @@ export const PenCanvas: React.FC<Props> = ({
       const xfmScale = canvasXformRef.current.scale;
       const p: Point = { x: (e.clientX - rect.left) / xfmScale, y: (e.clientY - rect.top) / xfmScale, pressure: e.pressure > 0 ? e.pressure : 0.5, t: Date.now() };
       isDrawingRef.current = true;
-      if (ie) { handleEraseAt(p, et, ps); return; }
+      if (ie) {
+        // push undo history once per eraser touch start
+        if (!eraserUndoPushedRef.current) {
+          const _epid = live.current.pages[live.current.pageIdx]?.id;
+          if (_epid) {
+            const _eh = undoHistoriesRef.current.get(_epid) ?? [];
+            undoHistoriesRef.current.set(_epid, [..._eh, [...strokesRef.current]]);
+            redoHistoriesRef.current.delete(_epid);
+          }
+          eraserUndoPushedRef.current = true;
+        }
+        handleEraseAt(p, et, ps); return;
+      }
 
       // 형광펜 직선 모드: 시작점 기록
       if (pt === 'highlighter' && hls) hlStartRef.current = { x: p.x, y: p.y, pressure: p.pressure };
@@ -1034,6 +1050,7 @@ export const PenCanvas: React.FC<Props> = ({
       if (pom && e.pointerType === 'touch') return;
       if (!isDrawingRef.current) return;
       isDrawingRef.current = false;
+      eraserUndoPushedRef.current = false;
       try { target.releasePointerCapture(e.pointerId); } catch {}
       if (currentStrokeRef.current) {
         let stroke = currentStrokeRef.current;
@@ -1044,6 +1061,13 @@ export const PenCanvas: React.FC<Props> = ({
           const ep: Point = { x: (e.clientX - rect2.left) / xs, y: (e.clientY - rect2.top) / xs, pressure: 0.5, t: Date.now() };
           stroke = { ...stroke, points: [hlStartRef.current, ep] };
           hlStartRef.current = null;
+        }
+        // undo history push
+        const _pid = pages[ci]?.id;
+        if (_pid) {
+          const _h = undoHistoriesRef.current.get(_pid) ?? [];
+          undoHistoriesRef.current.set(_pid, [..._h, [...strokesRef.current]]);
+          redoHistoriesRef.current.delete(_pid);
         }
         strokesRef.current.push(stroke);
         setPages(prev => prev.map((pg, i) => i === ci ? { ...pg, strokes: [...strokesRef.current] } : pg));
@@ -1085,6 +1109,35 @@ export const PenCanvas: React.FC<Props> = ({
     setPages(prev => prev.map((pg, i) => i === pageIdx ? { ...pg, strokes: [] } : pg));
     redrawBase(); clearActive();
   };
+
+
+  const handleUndo = useCallback(() => {
+    const pageId = pages[pageIdx]?.id;
+    if (!pageId) return;
+    const history = undoHistoriesRef.current.get(pageId) ?? [];
+    if (history.length === 0) return;
+    const prev = history[history.length - 1];
+    undoHistoriesRef.current.set(pageId, history.slice(0, -1));
+    const redo = redoHistoriesRef.current.get(pageId) ?? [];
+    redoHistoriesRef.current.set(pageId, [...redo, [...strokesRef.current]]);
+    strokesRef.current = [...prev];
+    setPages(p => p.map((pg, i) => i === pageIdx ? { ...pg, strokes: [...prev] } : pg));
+    redrawBase();
+  }, [pageIdx, pages, redrawBase]);
+
+  const handleRedo = useCallback(() => {
+    const pageId = pages[pageIdx]?.id;
+    if (!pageId) return;
+    const redo = redoHistoriesRef.current.get(pageId) ?? [];
+    if (redo.length === 0) return;
+    const next = redo[redo.length - 1];
+    redoHistoriesRef.current.set(pageId, redo.slice(0, -1));
+    const history = undoHistoriesRef.current.get(pageId) ?? [];
+    undoHistoriesRef.current.set(pageId, [...history, [...strokesRef.current]]);
+    strokesRef.current = [...next];
+    setPages(p => p.map((pg, i) => i === pageIdx ? { ...pg, strokes: [...next] } : pg));
+    redrawBase();
+  }, [pageIdx, pages, redrawBase]);
 
   // ── OCR (Gemini 즉석 인식 버튼용) ──────────────────────────────────────
   const handleOcr = async (customDataUrl?: string) => {
@@ -1534,16 +1587,16 @@ export const PenCanvas: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* Row 2: pen tools (icon-only) */}
-        <div className={`${toolbarCollapsed?'hidden':'flex'} items-center gap-1 flex-wrap`}>
+        {/* Row 2: pen tools (flat icon-only) */}
+        <div className={`${toolbarCollapsed?'hidden':'flex'} items-center gap-0 flex-wrap`}>
 
           {/* ── Pen type selector ── */}
           <div className="relative">
             <button type="button" title={PEN_LABELS[penType]}
               onClick={() => { setShowPenMenu(!showPenMenu); setShowColorPicker(false); setShowSizePicker(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
-              className={`border font-extrabold text-sm px-2 py-1.5 rounded-xl flex items-center gap-0.5 cursor-pointer ${isEraser?'bg-white/10 border-white/15 text-white/70':'bg-purple-600 border-purple-700 text-white'}`}>
-              <span>{PEN_ICONS[penType]}</span>
-              <span className="text-[9px] opacity-60">▾</span>
+              className={`px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 flex items-center gap-0.5 ${isEraser?'text-white/40 hover:text-white/75':'text-white'}`}>
+              <span className="text-base leading-none">{PEN_ICONS[penType]}</span>
+              <span className="text-[8px] opacity-40">▾</span>
             </button>
             {showPenMenu && (
               <div ref={penMenuRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-1.5 shadow-xl z-50 min-w-[160px] flex flex-col gap-1">
@@ -1602,10 +1655,10 @@ export const PenCanvas: React.FC<Props> = ({
           <div className="relative">
             <button type="button" title="색상"
               onClick={() => { setShowColorPicker(!showColorPicker); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
-              className="bg-white/10 border border-white/15 px-2 py-1.5 rounded-xl flex items-center gap-0.5 cursor-pointer hover:bg-white/15">
-              <span className="w-4 h-4 rounded-full border border-stone-300 shrink-0"
-                style={{backgroundColor: isEraser ? '#9ca3af' : penColor, opacity: isHL ? 0.5 : 1}}/>
-              <span className="text-[9px] text-white/35">▾</span>
+              className="px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 flex items-center gap-0.5 hover:opacity-90">
+              <span className="w-5 h-5 rounded-full shrink-0"
+                style={{backgroundColor: isEraser ? '#9ca3af' : penColor, opacity: isHL ? 0.6 : 1, outline: '2px solid rgba(255,255,255,0.25)', outlineOffset:'1px'}}/>
+              <span className="text-[8px] text-white/25">▾</span>
             </button>
             {showColorPicker && (
               <div ref={colorPickerRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-2.5 shadow-xl z-50" style={{minWidth:200}}>
@@ -1630,11 +1683,13 @@ export const PenCanvas: React.FC<Props> = ({
           <div className="relative">
             <button type="button" title={`굵기 ${penSize.toFixed(1)}px`}
               onClick={() => { setShowSizePicker(!showSizePicker); setShowColorPicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
-              className="bg-white/10 border border-white/15 px-2 py-1.5 rounded-xl flex items-center gap-0.5 cursor-pointer hover:bg-white/15 text-white/80">
-              <span className="flex items-center justify-center w-4 h-4">
-                <span className="rounded-full bg-current" style={{width:Math.max(3,Math.min(12,penSize))+'px',height:Math.max(3,Math.min(12,penSize))+'px'}}/>
-              </span>
-              <span className="text-[9px] text-white/35">▾</span>
+              className="px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 flex items-center gap-0.5 text-white/50 hover:text-white/90">
+              <svg width="18" height="14" viewBox="0 0 18 14" fill="currentColor" aria-hidden="true">
+                <rect x="0" y="0" width="18" height="1.5" rx="0.75"/>
+                <rect x="0" y="5" width="18" height="2.5" rx="1.25"/>
+                <rect x="0" y="10.5" width="18" height="3" rx="1.5" opacity="0.6"/>
+              </svg>
+              <span className="text-[8px] text-white/25">▾</span>
             </button>
             {showSizePicker && (
               <div ref={sizePickerRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-3 shadow-xl z-50" style={{minWidth:220}}>
@@ -1732,15 +1787,15 @@ export const PenCanvas: React.FC<Props> = ({
 
           {/* ── Eraser ── */}
           <div className="relative flex items-center">
-            <div className={`flex items-center rounded-xl border overflow-hidden ${isEraser?'bg-purple-600 text-white border-purple-700':'bg-white/10 border-white/15 text-white/80'}`}>
+            <div className="flex items-center">
               <button type="button" title={isEraser?(eraserType==='stroke'?'획지우개':'부분지우개'):'지우개'}
                 onClick={() => { setIsEraser(!isEraser); setShowEraserMenu(false); }}
-                className="px-2 py-1.5 font-extrabold text-xs flex items-center gap-1 cursor-pointer active:scale-95">
+                className={`px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 ${isEraser?'text-white':'text-white/40 hover:text-white/80'}`}>
                 <Eraser className="w-4 h-4"/>
               </button>
               <button type="button"
                 onClick={() => { setShowEraserMenu(!showEraserMenu); setShowColorPicker(false); setShowSizePicker(false); setShowPenMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
-                className={`px-1 py-1.5 border-l text-[9px] cursor-pointer hover:bg-black/10 ${isEraser?'border-purple-500':'border-stone-200 dark:border-slate-700 text-stone-500'}`}>▾</button>
+                className="text-[8px] text-white/25 cursor-pointer hover:text-white/60 pr-1">▾</button>
             </div>
             {showEraserMenu && (
               <div ref={eraserMenuRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-1.5 shadow-xl z-50 min-w-[180px] flex flex-col gap-1">
@@ -1766,19 +1821,20 @@ export const PenCanvas: React.FC<Props> = ({
             )}
           </div>
 
+          <div className="w-px h-4 bg-white/15 mx-1 shrink-0"/>
+
           {/* ── 종이 설정 (Settings 패널 토글) ── */}
           <button type="button" title="종이 설정"
             onClick={() => { setShowSettingsPanel(!showSettingsPanel); setShowColorPicker(false); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); }}
-            className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${showSettingsPanel?'bg-white/20 text-white border-white/25':'bg-white/10 border-white/15 text-white/70'}`}>
-            <span>{paperType==='black'?'🖤':paperType==='yellow'?'📒':'📄'}</span>
-            <Settings className="w-3.5 h-3.5"/>
+            className={`px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 ${showSettingsPanel?'opacity-100':'opacity-40 hover:opacity-80'}`}>
+            <span className="text-base leading-none">{paperType==='black'?'🖤':paperType==='yellow'?'📒':'📄'}</span>
           </button>
 
           {/* ── Palm rejection ── */}
           <button type="button" title={penOnlyMode ? '펜 전용 (터치 차단)' : '터치+펜 허용'}
             onClick={() => setPenOnlyMode(!penOnlyMode)}
-            className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${penOnlyMode?'bg-purple-500/25 border-purple-400/50 text-purple-200 ring-2 ring-purple-400/25':'bg-white/10 border-white/15 text-white/70'}`}>
-            <Hand className="w-4 h-4 text-purple-600"/>
+            className={`px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 ${penOnlyMode?'text-white':'text-white/40 hover:text-white/80'}`}>
+            <Hand className="w-4 h-4"/>
           </button>
 
           {/* ── 핀치 줌 ── */}
@@ -1794,17 +1850,33 @@ export const PenCanvas: React.FC<Props> = ({
               }
               setZoomEnabled(z => !z);
             }}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${zoomEnabled?'bg-blue-500/25 border-blue-400/50 text-blue-200 ring-2 ring-blue-400/25':'bg-white/10 border-white/15 text-white/70'}`}>
-            <span className="text-sm leading-none">🔍</span>
+            className={`px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 flex items-center gap-0.5 ${zoomEnabled?'text-white':'text-white/40 hover:text-white/80'}`}>
+            <Search className="w-4 h-4"/>
             {canvasXform.scale !== 1 && (
               <span className="text-[10px] font-black">{Math.round(canvasXform.scale*100)}%</span>
             )}
           </button>
 
+          <div className="w-px h-4 bg-white/15 mx-1 shrink-0"/>
+
+          {/* ── Undo ── */}
+          <button type="button" title="실행 취소" onClick={handleUndo}
+            className="px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 text-white/40 hover:text-white/80">
+            <Undo2 className="w-4 h-4"/>
+          </button>
+
+          {/* ── Redo ── */}
+          <button type="button" title="다시 실행" onClick={handleRedo}
+            className="px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 text-white/40 hover:text-white/80">
+            <Redo2 className="w-4 h-4"/>
+          </button>
+
+          <div className="w-px h-4 bg-white/15 mx-1 shrink-0"/>
+
           {/* ── OCR ── */}
           <button type="button" title={isOcrLoading ? '판독 중...' : ocrText ? 'AI 완료' : 'AI 인식'}
             disabled={isOcrLoading} onClick={() => handleOcr()}
-            className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shadow-sm active:scale-95 disabled:opacity-50 text-white shrink-0 ${isOcrLoading?'bg-purple-500':ocrText?'bg-blue-500 hover:bg-blue-600':'bg-red-500 hover:bg-red-600 animate-pulse'}`}>
+            className={`px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 disabled:opacity-40 ${isOcrLoading?'text-purple-400 animate-pulse':ocrText?'text-white':'text-white/40 hover:text-white/80'}`}>
             <Sparkles className="w-4 h-4"/>
           </button>
 
@@ -1812,8 +1884,9 @@ export const PenCanvas: React.FC<Props> = ({
           <button type="button" title={loadingPdf ? 'PDF 로딩...' : pdfBase64 ? 'PDF 첨부됨' : 'PDF 첨부'}
             disabled={loadingPdf}
             onClick={() => pdfInputRef.current?.click()}
-            className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shadow-sm text-white shrink-0 disabled:opacity-50 active:scale-95 ${pdfBase64 ? 'bg-amber-600 hover:bg-amber-700 ring-2 ring-amber-300' : 'bg-amber-500 hover:bg-amber-600'}`}>
+            className={`px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 disabled:opacity-40 relative ${pdfBase64?'text-white':'text-white/40 hover:text-white/80'}`}>
             <FileText className="w-4 h-4"/>
+            {pdfBase64 && <span className="absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-400"/>}
           </button>
           <input ref={pdfInputRef} type="file" accept=".pdf" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) importPdf(f); e.target.value = ''; }}/>
@@ -1824,12 +1897,13 @@ export const PenCanvas: React.FC<Props> = ({
           <div className="flex items-center gap-0.5">
             <button type="button" title={pageImages[pageIdx] ? '사진 첨부됨' : '사진 첨부'}
               onClick={() => imgInputRef.current?.click()}
-              className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shadow-sm active:scale-95 text-white shrink-0 ${pageImages[pageIdx] ? 'bg-green-600 hover:bg-green-700 ring-2 ring-green-300' : 'bg-teal-500 hover:bg-teal-600'}`}>
-              <span className="text-sm leading-none">🖼️</span>
+              className={`px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 relative ${pageImages[pageIdx]?'text-white':'text-white/40 hover:text-white/80'}`}>
+              <ImageIcon className="w-4 h-4"/>
+              {pageImages[pageIdx] && <span className="absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full bg-green-400"/>}
             </button>
             {pageImages[pageIdx] && (
               <button type="button" title="사진 제거" onClick={removePageImage}
-                className="p-1.5 bg-red-100 hover:bg-red-200 text-red-600 rounded-xl cursor-pointer shadow-sm active:scale-95 shrink-0">
+                className="text-white/30 hover:text-red-400 cursor-pointer active:scale-95 p-0.5">
                 <X className="w-3.5 h-3.5"/>
               </button>
             )}
@@ -1840,7 +1914,7 @@ export const PenCanvas: React.FC<Props> = ({
           {/* ── 노트 정보 (태그/폴더) ── */}
           <button type="button" title="태그/폴더"
             onClick={() => setShowNoteInfo(!showNoteInfo)}
-            className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shrink-0 ${showNoteInfo?'bg-purple-600 text-white':'bg-white/10 border border-white/15 text-white/70'}`}>
+            className={`px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 ${showNoteInfo?'text-white':'text-white/40 hover:text-white/80'}`}>
             <Tag className="w-4 h-4"/>
           </button>
         </div>

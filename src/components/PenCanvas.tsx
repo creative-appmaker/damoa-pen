@@ -290,6 +290,9 @@ export const PenCanvas: React.FC<Props> = ({
   const [pdfRenderMsg,  setPdfRenderMsg] = useState<string | null>(null); // "3/40페이지 렌더링 중..."
   const [pdfInvert,     setPdfInvert]    = useState(false); // PDF 반전 보기
   const [pageImages,    setPageImages]   = useState<(string|undefined)[]>(editingNote?.pageImages ?? []);
+  // ── 검색어 하이라이트 (캔버스 오버레이) ────────────────────────────────────
+  const [searchHighlights, setSearchHighlights] = useState<{x:number;y:number;w:number;h:number}[]>([]);
+  const [locatingSearch,   setLocatingSearch]   = useState(false);
 
   const swipeTouchRef          = useRef<{ id: number; startX: number; startY: number; startTime: number; classified: boolean; isSwipe: boolean } | null>(null);
   const addPageRef             = useRef<() => void>(() => {});
@@ -1167,6 +1170,52 @@ export const PenCanvas: React.FC<Props> = ({
     } catch { setOcrMsg('오류가 발생했습니다.'); setIsOcrLoading(false); return ''; }
   };
 
+  // ── 검색어 위치 찾기 (Gemini 바운딩박스) ────────────────────────────────────
+  const locateSearchTerm = useCallback(async (query: string) => {
+    const apiKey = localStorage.getItem('damoa_gemini_api_key');
+    if (!apiKey || !query.trim()) return;
+    const dataUrl = getExportDataUrl();
+    if (!dataUrl) return;
+    setLocatingSearch(true);
+    try {
+      const compressed = await compress(dataUrl, 1600, 0.85);
+      const m = compressed.match(/^data:image\/(\w+);base64,(.+)$/);
+      if (!m) return;
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+        { method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ contents:[{parts:[
+            {text:`이 손글씨 이미지에서 "${query.trim()}"라는 텍스트를 찾아주세요. 찾은 모든 위치의 바운딩 박스를 JSON 배열로만 반환해주세요. 형식: [[y_min,x_min,y_max,x_max],...] (값 범위 0-1000, 이미지 전체 대비 정규화). 찾지 못하면 []만 반환. 다른 텍스트 절대 포함하지 마세요.`},
+            {inline_data:{mime_type:`image/${m[1]}`,data:m[2]}}
+          ]}], generationConfig:{maxOutputTokens:512,temperature:0} }) }
+      );
+      const json = await res.json();
+      const raw = json.candidates?.[0]?.content?.parts?.[0]?.text ?? '[]';
+      const arrMatch = raw.match(/\[[\s\S]*\]/);
+      if (!arrMatch) { setSearchHighlights([]); return; }
+      const boxes: number[][] = JSON.parse(arrMatch[0]);
+      if (!Array.isArray(boxes) || boxes.length === 0) { setSearchHighlights([]); return; }
+      const cvs = baseCanvasRef.current;
+      const W = cvs ? cvs.offsetWidth  : window.innerWidth;
+      const H = cvs ? cvs.offsetHeight : window.innerHeight;
+      setSearchHighlights(boxes.map(([y0,x0,y1,x1]) => ({
+        x: (x0/1000)*W, y: (y0/1000)*H,
+        w: ((x1-x0)/1000)*W, h: ((y1-y0)/1000)*H,
+      })));
+    } catch(e) {
+      setSearchHighlights([]);
+    } finally {
+      setLocatingSearch(false);
+    }
+  }, [getExportDataUrl]);
+
+  // 검색어가 있을 때 자동 위치 탐색 (페이지 이동 후 충분히 지연)
+  useEffect(() => {
+    if (!initialSearchQuery?.trim()) { setSearchHighlights([]); return; }
+    const t = setTimeout(() => locateSearchTerm(initialSearchQuery), 1200);
+    return () => clearTimeout(t);
+  }, [initialSearchQuery, pageIdx, locateSearchTerm]);
+
   // ── 사진 첨부 ──────────────────────────────────────────────────────────────
   const importImage = useCallback(async (file: File) => {
     const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -2039,6 +2088,24 @@ export const PenCanvas: React.FC<Props> = ({
             style={{touchAction:'none', userSelect:'none', willChange:'transform'}}/>
           <canvas ref={activeCanvasRef} className="absolute inset-0 w-full h-full block"
             style={{touchAction:'none', userSelect:'none', willChange:'transform', background:'transparent'}}/>
+          {/* ── 검색어 하이라이트 오버레이 ── */}
+          {searchHighlights.map((box, i) => (
+            <div key={i} style={{
+              position: 'absolute',
+              left: box.x, top: box.y, width: box.w, height: box.h,
+              background: 'rgba(253,224,71,0.28)',
+              border: '2px solid rgba(250,200,0,0.85)',
+              borderRadius: '4px',
+              pointerEvents: 'none',
+              zIndex: 8,
+            }}/>
+          ))}
+          {/* ── 검색 위치 탐색 중 표시 ── */}
+          {locatingSearch && (
+            <div style={{position:'absolute',bottom:8,right:8,zIndex:20,background:'rgba(124,58,237,0.85)',color:'#fff',borderRadius:12,padding:'4px 10px',fontSize:11,fontWeight:700,pointerEvents:'none'}}>
+              🔍 검색 위치 탐색 중...
+            </div>
+          )}
         </div>
         </div>{/* /페이지 전환 슬라이드 wrapper */}
 

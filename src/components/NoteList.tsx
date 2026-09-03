@@ -6,7 +6,7 @@ import {
 import { PenNote, Folder } from '../types';
 import { exportAllNotes } from '../lib/storage';
 
-const APP_VERSION = 'V7.3';
+const APP_VERSION = 'V7.4';
 
 async function handleBackupExport() {
   const json = await exportAllNotes();

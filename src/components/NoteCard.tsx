@@ -23,11 +23,10 @@ function hl(text: string, query: string): React.ReactNode {
   if (idx === -1) return text;
   const boxStyle: React.CSSProperties = {
     display: 'inline',
-    border: '1.5px solid #f59e0b',
+    background: '#fde047',
+    color: '#1c1917',
     borderRadius: '3px',
-    padding: '0 2px',
-    color: 'inherit',
-    background: 'rgba(245,158,11,0.15)',
+    padding: '0 3px',
     fontWeight: 900,
   };
   return (

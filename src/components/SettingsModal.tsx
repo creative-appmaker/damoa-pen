@@ -353,7 +353,7 @@ export const SettingsModal: React.FC<Props> = ({ onClose, darkMode, onToggleDark
 
           {/* Version */}
           <div className="text-center text-[11px] text-stone-300 dark:text-slate-600 font-bold">
-            다모아 펜 V7.3 · 로컬 저장 손글씨 앱
+            다모아 펜 V7.4 · 로컬 저장 손글씨 앱
           </div>
         </div>
       </div>

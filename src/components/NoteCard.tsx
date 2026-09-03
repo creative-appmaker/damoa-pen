@@ -15,32 +15,43 @@ interface Props {
   searchQuery?: string;
 }
 
-// 검색어 하이라이트 헬퍼
+// 검색어 박스 하이라이트 헬퍼
 function hl(text: string, query: string): React.ReactNode {
   if (!query.trim() || !text) return text;
   const q = query.trim().toLowerCase();
   const idx = text.toLowerCase().indexOf(q);
   if (idx === -1) return text;
+  const boxStyle: React.CSSProperties = {
+    display: 'inline',
+    border: '1.5px solid #f59e0b',
+    borderRadius: '3px',
+    padding: '0 2px',
+    color: 'inherit',
+    background: 'rgba(245,158,11,0.15)',
+    fontWeight: 900,
+  };
   return (
-    <>{text.slice(0, idx)}<mark style={{background:'#fbbf24',color:'#1c1917',borderRadius:'2px',padding:'0 1px'}}>{text.slice(idx, idx + q.length)}</mark>{text.slice(idx + q.length)}</>
+    <>{text.slice(0, idx)}<span style={boxStyle}>{text.slice(idx, idx + q.length)}</span>{text.slice(idx + q.length)}</>
   );
 }
 
-// OCR 전문에서 검색어 주변 스니펫 추출
+// OCR 전문에서 검색어 주변 스니펫 추출 (제목 제외, 본문만)
 function getSnippet(note: PenNote, query: string): string | null {
   if (!query.trim()) return null;
   const q = query.trim().toLowerCase();
+  // 제목에서만 매치되면 스니펫 불필요
   const sources = [
     note.ocrText ?? '',
     ...(note.pageOcrTexts ?? []),
     note.pdfText ?? '',
-  ];
+  ].filter(s => s.trim().length > 0);
   for (const src of sources) {
-    const idx = src.toLowerCase().indexOf(q);
+    const clean = src.replace(/\s+/g, ' ').trim();
+    const idx = clean.toLowerCase().indexOf(q);
     if (idx === -1) continue;
-    const start = Math.max(0, idx - 25);
-    const end   = Math.min(src.length, idx + q.length + 25);
-    return (start > 0 ? '…' : '') + src.slice(start, end) + (end < src.length ? '…' : '');
+    const start = Math.max(0, idx - 30);
+    const end   = Math.min(clean.length, idx + q.length + 30);
+    return (start > 0 ? '…' : '') + clean.slice(start, end) + (end < clean.length ? '…' : '');
   }
   return null;
 }

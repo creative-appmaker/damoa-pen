@@ -740,6 +740,12 @@ export const PenCanvas: React.FC<Props> = ({
         return;
       }
       const t = e.touches[0];
+      // 손바닥 감지: radiusX/radiusY가 크면 팜으로 간주 → 스와이프 무시
+      // (손가락은 보통 ~10px, 손바닥은 40px+ 수준)
+      if (t.radiusX > 40 || t.radiusY > 40) {
+        swipeTouchRef.current = null;
+        return;
+      }
       swipeTouchRef.current = {
         id: t.identifier, startX: t.clientX, startY: t.clientY,
         startTime: Date.now(), classified: false, isSwipe: false,

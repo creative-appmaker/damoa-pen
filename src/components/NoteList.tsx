@@ -237,6 +237,7 @@ export const NoteList: React.FC<Props> = ({
                   const n = notes.find(x => x.id === noteId);
                   if (n) onMoveToFolder(n, folderId);
                 } : undefined}
+                searchQuery={query.trim() || undefined}
               />
             ))}
           </div>

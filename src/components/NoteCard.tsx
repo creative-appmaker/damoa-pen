@@ -12,6 +12,37 @@ interface Props {
   onTogglePin: (note: PenNote) => void;
   folders?: Folder[];
   onMoveToFolder?: (noteId: string, folderId: string | undefined) => void;
+  searchQuery?: string;
+}
+
+// 검색어 하이라이트 헬퍼
+function hl(text: string, query: string): React.ReactNode {
+  if (!query.trim() || !text) return text;
+  const q = query.trim().toLowerCase();
+  const idx = text.toLowerCase().indexOf(q);
+  if (idx === -1) return text;
+  return (
+    <>{text.slice(0, idx)}<mark style={{background:'#fbbf24',color:'#1c1917',borderRadius:'2px',padding:'0 1px'}}>{text.slice(idx, idx + q.length)}</mark>{text.slice(idx + q.length)}</>
+  );
+}
+
+// OCR 전문에서 검색어 주변 스니펫 추출
+function getSnippet(note: PenNote, query: string): string | null {
+  if (!query.trim()) return null;
+  const q = query.trim().toLowerCase();
+  const sources = [
+    note.ocrText ?? '',
+    ...(note.pageOcrTexts ?? []),
+    note.pdfText ?? '',
+  ];
+  for (const src of sources) {
+    const idx = src.toLowerCase().indexOf(q);
+    if (idx === -1) continue;
+    const start = Math.max(0, idx - 25);
+    const end   = Math.min(src.length, idx + q.length + 25);
+    return (start > 0 ? '…' : '') + src.slice(start, end) + (end < src.length ? '…' : '');
+  }
+  return null;
 }
 
 function fmtDate(ts: number) {
@@ -24,8 +55,9 @@ function fmtTime(ts: number) {
 }
 
 export const NoteCard: React.FC<Props> = ({
-  note, viewMode, onEdit, onDeleteRequest, onTogglePin, folders, onMoveToFolder,
+  note, viewMode, onEdit, onDeleteRequest, onTogglePin, folders, onMoveToFolder, searchQuery,
 }) => {
+  const sq = searchQuery?.trim() ?? '';
   const bgColor   = note.paperType==='black'?'#1a1a1a':note.paperType==='yellow'?'#fef9c3':'#ffffff';
   const textColor = note.paperType==='black'?'#e2e8f0':'#1c1917';
   const hasPdf    = !!note.pdfBase64;
@@ -137,8 +169,11 @@ export const NoteCard: React.FC<Props> = ({
               {note.isPinned && <Pin className="w-3 h-3 text-amber-500 fill-amber-500 shrink-0"/>}
               {hasPdf && <FileText className="w-3 h-3 text-amber-600 shrink-0"/>}
               {ocrDot}
-              <span className="text-sm font-black text-stone-900 dark:text-slate-100 truncate">{note.title || '제목 없음'}</span>
+              <span className="text-sm font-black text-stone-900 dark:text-slate-100 truncate">{sq ? hl(note.title || '제목 없음', sq) : (note.title || '제목 없음')}</span>
             </div>
+            {sq && (() => { const snip = getSnippet(note, sq); return snip ? (
+              <div className="text-[11px] text-stone-500 dark:text-slate-400 mt-0.5 line-clamp-1">{hl(snip, sq)}</div>
+            ) : null; })()}
             <div className="flex items-center gap-2 mt-1">
               {note.tags?.slice(0,3).map(t => (
                 <span key={t} className="text-[10px] px-1.5 py-0.5 bg-purple-100 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300 rounded-full font-bold">#{t}</span>
@@ -186,7 +221,7 @@ export const NoteCard: React.FC<Props> = ({
             </button>
           </div>
           <div className="px-1.5 py-1" style={{backgroundColor:bgColor}}>
-            <div className="flex items-center gap-1"><span>{ocrDot}</span><div className="text-[10px] font-black truncate" style={{color:textColor}}>{note.title || '제목 없음'}</div></div>
+            <div className="flex items-center gap-1"><span>{ocrDot}</span><div className="text-[10px] font-black truncate" style={{color:textColor}}>{sq ? hl(note.title || '제목 없음', sq) : (note.title || '제목 없음')}</div></div>
             <div className="text-[9px] opacity-50 font-bold" style={{color:textColor}}>{fmtDate(note.updatedAt)}</div>
           </div>
         </div>
@@ -225,7 +260,10 @@ export const NoteCard: React.FC<Props> = ({
             </button>
           </div>
           <div className="px-3 py-2.5 flex-1" style={{backgroundColor:bgColor}}>
-            <div className="flex items-center gap-1.5 mb-1">{ocrDot}<div className="text-sm font-black truncate" style={{color:textColor}}>{note.title || '제목 없음'}</div></div>
+            <div className="flex items-center gap-1.5 mb-1">{ocrDot}<div className="text-sm font-black truncate" style={{color:textColor}}>{sq ? hl(note.title || '제목 없음', sq) : (note.title || '제목 없음')}</div></div>
+            {sq && (() => { const snip = getSnippet(note, sq); return snip ? (
+              <div className="text-[11px] opacity-70 line-clamp-2 mb-1" style={{color:textColor}}>{hl(snip, sq)}</div>
+            ) : null; })()}
             {note.tags && note.tags.length > 0 && (
               <div className="flex flex-wrap gap-1 mb-1.5">
                 {note.tags.slice(0,4).map(t => (
@@ -270,7 +308,10 @@ export const NoteCard: React.FC<Props> = ({
           </button>
         </div>
         <div className="px-2.5 py-2 flex-1" style={{backgroundColor:bgColor}}>
-          <div className="flex items-center gap-1 mb-0.5">{ocrDot}<div className="text-xs font-black truncate" style={{color:textColor}}>{note.title || '제목 없음'}</div></div>
+          <div className="flex items-center gap-1 mb-0.5">{ocrDot}<div className="text-xs font-black truncate" style={{color:textColor}}>{sq ? hl(note.title || '제목 없음', sq) : (note.title || '제목 없음')}</div></div>
+          {sq && (() => { const snip = getSnippet(note, sq); return snip ? (
+            <div className="text-[10px] opacity-60 line-clamp-1 mb-0.5" style={{color:textColor}}>{hl(snip, sq)}</div>
+          ) : null; })()}
           <div className="text-[10px] opacity-50 font-bold" style={{color:textColor}}>{fmtDate(note.updatedAt)} {fmtTime(note.updatedAt)}</div>
         </div>
       </div>

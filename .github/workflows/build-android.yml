@@ -290,6 +290,70 @@ jobs:
           echo "--- 수정된 MainActivity.java ---"
           cat "$MAIN"
 
+      - name: Apply sticky immersive mode (하단 홈 제스처 팜 오인식 방지)
+        run: |
+          # Android 시스템은 setSystemGestureExclusionRects로 하단 홈 제스처 영역을 제외할 수 없음.
+          # Sticky Immersive Mode로 내비게이션 바 자체를 숨겨야 손바닥 해제 시 홈으로 나가는 현상을 막을 수 있음.
+          # onCreate + onWindowFocusChanged 양쪽에서 호출해야 앱 시작 시 즉시 숨겨지고 포커스 복귀 시에도 유지됨.
+          python3 << 'PYEOF'
+          path = "android/app/src/main/java/com/damoa/pen/MainActivity.java"
+          with open(path, "r") as f:
+              content = f.read()
+
+          if "setupImmersiveMode" in content:
+              print("이미 적용됨, 스킵")
+          else:
+              immersive_methods = (
+                  "\n    // Sticky Immersive Mode: 내비게이션 바 숨김 → 하단 팜 오인식 홈 제스처 방지\n"
+                  "    private void setupImmersiveMode() {\n"
+                  "        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {\n"
+                  "            android.view.WindowInsetsController ctrl = getWindow().getInsetsController();\n"
+                  "            if (ctrl != null) {\n"
+                  "                ctrl.hide(android.view.WindowInsets.Type.navigationBars());\n"
+                  "                ctrl.setSystemBarsBehavior(\n"
+                  "                    android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);\n"
+                  "            }\n"
+                  "        } else {\n"
+                  "            getWindow().getDecorView().setSystemUiVisibility(\n"
+                  "                android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION\n"
+                  "                | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);\n"
+                  "        }\n"
+                  "    }\n\n"
+                  "    @Override\n"
+                  "    public void onWindowFocusChanged(boolean hasFocus) {\n"
+                  "        super.onWindowFocusChanged(hasFocus);\n"
+                  "        if (hasFocus) setupImmersiveMode();\n"
+                  "    }\n"
+              )
+              # 클래스 마지막 } 앞에 메서드 삽입
+              last_brace = content.rfind("}")
+              content = content[:last_brace] + immersive_methods + content[last_brace:]
+
+              # onCreate 안에서도 즉시 호출: 제스처 제외 블록 바로 뒤에 삽입
+              # 팜리젝션 스텝이 삽입한 블록의 끝 부분을 앵커로 사용
+              close_block = "                });\n        }\n"  # 실제 들여쓰기 16칸
+              if "setSystemGestureExclusionRects" in content:
+                  anchor_pos = content.find("setSystemGestureExclusionRects")
+                  close_pos  = content.find(close_block, anchor_pos)
+                  if close_pos != -1:
+                      insert_at = close_pos + len(close_block)
+                      content = content[:insert_at] + "        setupImmersiveMode();\n" + content[insert_at:]
+                      print("onCreate 내 setupImmersiveMode() 호출 삽입 완료")
+              else:
+                  # 제스처 제외 코드가 없는 경우 super.onCreate 바로 뒤에 삽입
+                  content = content.replace(
+                      "super.onCreate(savedInstanceState);",
+                      "super.onCreate(savedInstanceState);\n        setupImmersiveMode();",
+                      1
+                  )
+
+              with open(path, "w") as f:
+                  f.write(content)
+              print("Sticky Immersive Mode 적용 완료")
+          PYEOF
+          echo "--- 최종 MainActivity.java ---"
+          cat android/app/src/main/java/com/damoa/pen/MainActivity.java
+
       - name: Generate app icons from resources/icon.png
         run: |
           pip install Pillow --break-system-packages -q

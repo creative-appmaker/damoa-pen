@@ -142,7 +142,7 @@ function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
   if (!pts?.length) return;
 
   if (stroke.penType === 'fountain') {
-    // Per-segment varying width
+    // Per-segment varying width, quadratic bezier for smoothness
     if (pts.length === 1) {
       const p = pts[0];
       applyPenStyle(ctx, stroke, p.pressure);
@@ -156,8 +156,14 @@ function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
       const avgP = (p1.pressure + p2.pressure) / 2;
       applyPenStyle(ctx, stroke, avgP);
       ctx.beginPath();
-      ctx.moveTo(p1.x, p1.y);
-      ctx.lineTo(p2.x, p2.y);
+      if (i === 1 || i === pts.length - 1) {
+        ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y);
+      } else {
+        const p0 = pts[i-2];
+        const mx1 = (p0.x + p1.x) / 2, my1 = (p0.y + p1.y) / 2;
+        const mx2 = (p1.x + p2.x) / 2, my2 = (p1.y + p2.y) / 2;
+        ctx.moveTo(mx1, my1); ctx.quadraticCurveTo(p1.x, p1.y, mx2, my2);
+      }
       ctx.stroke();
     }
     resetCtxState(ctx); return;
@@ -197,13 +203,6 @@ function appendSegment(
   if (pts.length < 2) return;
   const len = pts.length;
   const p1 = pts[len-2], p2 = pts[len-1];
-
-  if (stroke.penType === 'fountain') {
-    const avgP = (p1.pressure + p2.pressure) / 2;
-    applyPenStyle(ctx, stroke, avgP);
-    ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
-    resetCtxState(ctx); return;
-  }
 
   const avgP = (p1.pressure + p2.pressure) / 2;
   applyPenStyle(ctx, stroke, avgP);
@@ -1013,8 +1012,12 @@ export const PenCanvas: React.FC<Props> = ({
 
         const pts = currentStrokeRef.current.points;
         const prev = pts[pts.length - 1];
-        if (prev) { const dx = p.x - prev.x, dy = p.y - prev.y; if (dx*dx + dy*dy < 0.25) continue; }
-        pts.push(p);
+        if (prev) { const dx = p.x - prev.x, dy = p.y - prev.y; if (dx*dx + dy*dy < 1.5) continue; }
+        // 입력 포인트 EMA 스무딩 (반응속도 유지하면서 미세 떨림 제거)
+        const smoothed: Point = prev
+          ? { x: p.x * 0.65 + prev.x * 0.35, y: p.y * 0.65 + prev.y * 0.35, pressure: p.pressure, t: p.t }
+          : p;
+        pts.push(smoothed);
         const ac = activeCanvasRef.current;
         if (ac) appendSegment(ac.getContext('2d')!, { color: pc, size: ps, penType: pt, fountainIntensity: fi } as Stroke, pts);
       }
@@ -1451,14 +1454,14 @@ export const PenCanvas: React.FC<Props> = ({
 
       {/* ── Toolbar ── */}
       {/* touch-action:auto so stylus can tap inputs on tablet */}
-      <div className="bg-stone-100 dark:bg-slate-800 px-2 py-1.5 border-b border-stone-200 dark:border-slate-700 shadow-sm relative z-30 space-y-1.5"
-        style={{touchAction:'auto'}}>
+      <div className="px-2 py-2 border-b border-white/10 relative z-30 space-y-1.5"
+        style={{touchAction:'auto', background:'rgba(22,20,18,0.97)'}}>
 
         {/* Row 1: back / title / page nav / collapse / save */}
         <div className="flex items-center gap-1.5">
           <button type="button" onClick={onBack}
-            className="px-2 py-1 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-lg font-black text-xs flex items-center gap-1 text-stone-700 dark:text-slate-200 cursor-pointer hover:bg-purple-50">
-            <ChevronLeft className="w-3.5 h-3.5 text-purple-600"/>
+            className="px-2 py-1 bg-white/10 border border-white/15 rounded-lg font-black text-xs flex items-center gap-1 text-white/75 cursor-pointer hover:bg-white/15">
+            <ChevronLeft className="w-3.5 h-3.5 text-purple-400"/>
             <span className="hidden sm:inline">목록</span>
           </button>
 
@@ -1468,7 +1471,7 @@ export const PenCanvas: React.FC<Props> = ({
             onChange={e => setTitle(e.target.value)}
             placeholder="제목 (선택사항)"
             inputMode="text"
-            className="flex-1 min-w-0 text-sm font-bold bg-transparent outline-none text-stone-800 dark:text-slate-100 placeholder-stone-300 dark:placeholder-slate-600 px-1 py-1"
+            className="flex-1 min-w-0 text-sm font-bold bg-transparent outline-none text-white/90 placeholder-white/25 px-1 py-1"
             style={{touchAction:'auto', pointerEvents:'auto', userSelect:'text', WebkitUserSelect:'text'} as React.CSSProperties}
             onPointerDown={e => e.stopPropagation()}
             onTouchStart={e => e.stopPropagation()}
@@ -1476,16 +1479,16 @@ export const PenCanvas: React.FC<Props> = ({
           />
 
           {/* Page nav */}
-          <div className="flex items-center bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-xl px-1.5 py-1 gap-1 shadow-sm"
+          <div className="flex items-center bg-white/10 border border-white/15 rounded-xl px-1.5 py-1 gap-1"
             style={{touchAction:'auto'}}>
             <button type="button" disabled={pageIdx===0} onClick={() => animatedGoToPage(pageIdx-1)}
-              className="p-0.5 disabled:opacity-30 hover:bg-stone-100 rounded cursor-pointer">
-              <ChevronLeft className="w-3.5 h-3.5 text-purple-600"/>
+              className="p-0.5 disabled:opacity-30 hover:bg-white/10 rounded cursor-pointer">
+              <ChevronLeft className="w-3.5 h-3.5 text-purple-400"/>
             </button>
-            <span className="text-[11px] font-black text-stone-700 dark:text-slate-200">{pageIdx+1}/{pages.length}</span>
+            <span className="text-[11px] font-black text-white/80">{pageIdx+1}/{pages.length}</span>
             <button type="button" onClick={() => pageIdx<pages.length-1?animatedGoToPage(pageIdx+1):addPage()}
-              className="p-0.5 hover:bg-stone-100 rounded cursor-pointer">
-              <ChevronRight className="w-3.5 h-3.5 text-purple-600"/>
+              className="p-0.5 hover:bg-white/10 rounded cursor-pointer">
+              <ChevronRight className="w-3.5 h-3.5 text-purple-400"/>
             </button>
           </div>
 
@@ -1500,7 +1503,7 @@ export const PenCanvas: React.FC<Props> = ({
                   cachedRectRef.current = null;
                 } else { setZoomLocked(true); }
               }}
-              className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shrink-0 border ${zoomLocked?'bg-amber-100 dark:bg-amber-950/60 border-amber-400 text-amber-800':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-500 dark:text-slate-400'}`}>
+              className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shrink-0 border ${zoomLocked?'bg-amber-500/25 border-amber-400/50 text-amber-300':'bg-white/10 border-white/15 text-white/50'}`}>
               {zoomLocked ? <Lock className="w-3.5 h-3.5"/> : <Unlock className="w-3.5 h-3.5"/>}
             </button>
           )}
@@ -1509,13 +1512,13 @@ export const PenCanvas: React.FC<Props> = ({
           {pdfBase64 && (
             <button type="button" title={pdfInvert ? 'PDF 반전 끄기' : 'PDF 반전 (야간)'}
               onClick={() => setPdfInvert(v => !v)}
-              className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shrink-0 border text-sm leading-none ${pdfInvert?'bg-indigo-700 border-indigo-600 text-white':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-600 dark:text-slate-300'}`}>
+              className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shrink-0 border text-sm leading-none ${pdfInvert?'bg-indigo-600/50 border-indigo-500/50 text-white':'bg-white/10 border-white/15 text-white/60'}`}>
               🌙
             </button>
           )}
 
           <button type="button" onClick={() => setToolbarCollapsed(!toolbarCollapsed)}
-            className="flex items-center gap-1 px-2 py-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-xl text-xs font-black cursor-pointer text-stone-700 dark:text-slate-200">
+            className="flex items-center gap-1 px-2 py-1.5 bg-white/10 border border-white/15 rounded-xl text-xs font-black cursor-pointer text-white/60 hover:bg-white/15">
             {toolbarCollapsed ? <ChevronDown className="w-3.5 h-3.5"/> : <ChevronUp className="w-3.5 h-3.5"/>}
           </button>
 
@@ -1532,7 +1535,7 @@ export const PenCanvas: React.FC<Props> = ({
           <div className="relative">
             <button type="button" title={PEN_LABELS[penType]}
               onClick={() => { setShowPenMenu(!showPenMenu); setShowColorPicker(false); setShowSizePicker(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
-              className={`border font-extrabold text-sm px-2 py-1.5 rounded-xl flex items-center gap-0.5 cursor-pointer shadow-sm ${isEraser?'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-200':'bg-purple-600 border-purple-700 text-white'}`}>
+              className={`border font-extrabold text-sm px-2 py-1.5 rounded-xl flex items-center gap-0.5 cursor-pointer ${isEraser?'bg-white/10 border-white/15 text-white/70':'bg-purple-600 border-purple-700 text-white'}`}>
               <span>{PEN_ICONS[penType]}</span>
               <span className="text-[9px] opacity-60">▾</span>
             </button>
@@ -1593,10 +1596,10 @@ export const PenCanvas: React.FC<Props> = ({
           <div className="relative">
             <button type="button" title="색상"
               onClick={() => { setShowColorPicker(!showColorPicker); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
-              className="bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 px-2 py-1.5 rounded-xl flex items-center gap-0.5 cursor-pointer shadow-sm hover:bg-stone-50">
+              className="bg-white/10 border border-white/15 px-2 py-1.5 rounded-xl flex items-center gap-0.5 cursor-pointer hover:bg-white/15">
               <span className="w-4 h-4 rounded-full border border-stone-300 shrink-0"
                 style={{backgroundColor: isEraser ? '#9ca3af' : penColor, opacity: isHL ? 0.5 : 1}}/>
-              <span className="text-[9px] text-stone-400">▾</span>
+              <span className="text-[9px] text-white/35">▾</span>
             </button>
             {showColorPicker && (
               <div ref={colorPickerRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-2.5 shadow-xl z-50" style={{minWidth:200}}>
@@ -1621,11 +1624,11 @@ export const PenCanvas: React.FC<Props> = ({
           <div className="relative">
             <button type="button" title={`굵기 ${penSize.toFixed(1)}px`}
               onClick={() => { setShowSizePicker(!showSizePicker); setShowColorPicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
-              className="bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 px-2 py-1.5 rounded-xl flex items-center gap-0.5 cursor-pointer shadow-sm hover:bg-stone-50 text-stone-800 dark:text-slate-200">
+              className="bg-white/10 border border-white/15 px-2 py-1.5 rounded-xl flex items-center gap-0.5 cursor-pointer hover:bg-white/15 text-white/80">
               <span className="flex items-center justify-center w-4 h-4">
                 <span className="rounded-full bg-current" style={{width:Math.max(3,Math.min(12,penSize))+'px',height:Math.max(3,Math.min(12,penSize))+'px'}}/>
               </span>
-              <span className="text-[9px] text-stone-400">▾</span>
+              <span className="text-[9px] text-white/35">▾</span>
             </button>
             {showSizePicker && (
               <div ref={sizePickerRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-3 shadow-xl z-50" style={{minWidth:220}}>
@@ -1723,7 +1726,7 @@ export const PenCanvas: React.FC<Props> = ({
 
           {/* ── Eraser ── */}
           <div className="relative flex items-center">
-            <div className={`flex items-center rounded-xl border overflow-hidden shadow-sm ${isEraser?'bg-purple-600 text-white border-purple-700':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-800 dark:text-slate-200'}`}>
+            <div className={`flex items-center rounded-xl border overflow-hidden ${isEraser?'bg-purple-600 text-white border-purple-700':'bg-white/10 border-white/15 text-white/80'}`}>
               <button type="button" title={isEraser?(eraserType==='stroke'?'획지우개':'부분지우개'):'지우개'}
                 onClick={() => { setIsEraser(!isEraser); setShowEraserMenu(false); }}
                 className="px-2 py-1.5 font-extrabold text-xs flex items-center gap-1 cursor-pointer active:scale-95">
@@ -1760,7 +1763,7 @@ export const PenCanvas: React.FC<Props> = ({
           {/* ── 종이 설정 (Settings 패널 토글) ── */}
           <button type="button" title="종이 설정"
             onClick={() => { setShowSettingsPanel(!showSettingsPanel); setShowColorPicker(false); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); }}
-            className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-black border cursor-pointer shadow-sm ${showSettingsPanel?'bg-stone-700 dark:bg-slate-600 text-white border-stone-700':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-200'}`}>
+            className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${showSettingsPanel?'bg-white/20 text-white border-white/25':'bg-white/10 border-white/15 text-white/70'}`}>
             <span>{paperType==='black'?'🖤':paperType==='yellow'?'📒':'📄'}</span>
             <Settings className="w-3.5 h-3.5"/>
           </button>
@@ -1768,7 +1771,7 @@ export const PenCanvas: React.FC<Props> = ({
           {/* ── Palm rejection ── */}
           <button type="button" title={penOnlyMode ? '펜 전용 (터치 차단)' : '터치+펜 허용'}
             onClick={() => setPenOnlyMode(!penOnlyMode)}
-            className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${penOnlyMode?'bg-purple-100 dark:bg-purple-950/60 border-purple-300 text-purple-900 ring-2 ring-purple-200/80':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-300'}`}>
+            className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${penOnlyMode?'bg-purple-500/25 border-purple-400/50 text-purple-200 ring-2 ring-purple-400/25':'bg-white/10 border-white/15 text-white/70'}`}>
             <Hand className="w-4 h-4 text-purple-600"/>
           </button>
 
@@ -1785,7 +1788,7 @@ export const PenCanvas: React.FC<Props> = ({
               }
               setZoomEnabled(z => !z);
             }}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${zoomEnabled?'bg-blue-100 dark:bg-blue-950/60 border-blue-300 text-blue-900 dark:text-blue-100 ring-2 ring-blue-200/80':'bg-white dark:bg-slate-900 border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-300'}`}>
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-black border cursor-pointer ${zoomEnabled?'bg-blue-500/25 border-blue-400/50 text-blue-200 ring-2 ring-blue-400/25':'bg-white/10 border-white/15 text-white/70'}`}>
             <span className="text-sm leading-none">🔍</span>
             {canvasXform.scale !== 1 && (
               <span className="text-[10px] font-black">{Math.round(canvasXform.scale*100)}%</span>
@@ -1831,17 +1834,17 @@ export const PenCanvas: React.FC<Props> = ({
           {/* ── 노트 정보 (태그/폴더) ── */}
           <button type="button" title="태그/폴더"
             onClick={() => setShowNoteInfo(!showNoteInfo)}
-            className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shadow-sm shrink-0 ${showNoteInfo?'bg-purple-600 text-white':'bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-300'}`}>
+            className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shrink-0 ${showNoteInfo?'bg-purple-600 text-white':'bg-white/10 border border-white/15 text-white/70'}`}>
             <Tag className="w-4 h-4"/>
           </button>
         </div>
 
         {/* Row 2.5: 종이 설정 패널 */}
         {showSettingsPanel && (
-          <div className="mt-1 border-t border-stone-200 dark:border-slate-700 pt-2 flex flex-col gap-2.5">
+          <div className="mt-1 border-t border-white/10 pt-2 flex flex-col gap-2.5">
             {/* 종이 색상 */}
             <div>
-              <div className="text-[10px] font-black text-stone-400 dark:text-slate-500 mb-1.5 uppercase tracking-wider">종이 색상</div>
+              <div className="text-[10px] font-black text-white/40 mb-1.5 uppercase tracking-wider">종이 색상</div>
               <div className="flex gap-1.5">
                 {(['white','yellow','black'] as const).map(pt => (
                   <button key={pt} type="button"
@@ -1860,7 +1863,7 @@ export const PenCanvas: React.FC<Props> = ({
             {/* 줄 표시 */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <div className="text-[10px] font-black text-stone-400 dark:text-slate-500 uppercase tracking-wider">줄 표시</div>
+                <div className="text-[10px] font-black text-white/40 uppercase tracking-wider">줄 표시</div>
                 <button type="button" onClick={() => setShowLines(!showLines)}
                   className={`px-2.5 py-0.5 rounded-full text-[10px] font-black cursor-pointer ${showLines?'bg-purple-600 text-white':'bg-stone-200 dark:bg-slate-700 text-stone-600 dark:text-slate-300'}`}>
                   {showLines?'ON':'OFF'}

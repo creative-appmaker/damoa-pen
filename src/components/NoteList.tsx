@@ -1,9 +1,32 @@
 import React, { useState, useMemo } from 'react';
 import {
   Search, Settings, Plus, Pin, SortAsc, FolderOpen,
-  LayoutGrid, List, AlignJustify, Rows3, Trash2, X,
+  LayoutGrid, List, AlignJustify, Rows3, Trash2, X, Download,
 } from 'lucide-react';
 import { PenNote, Folder } from '../types';
+import { exportAllNotes } from '../lib/storage';
+
+const APP_VERSION = 'V7.3';
+
+async function handleBackupExport() {
+  const json = await exportAllNotes();
+  const filename = `damoa-pen-backup-${new Date().toISOString().slice(0,10)}.json`;
+  const blob = new Blob([json], {type:'application/json'});
+  if (typeof navigator.share === 'function') {
+    try {
+      const file = new File([blob], filename, {type:'application/json'});
+      if (navigator.canShare && navigator.canShare({files:[file]})) {
+        await navigator.share({files:[file], title:'다모아 펜 백업'});
+        return;
+      }
+    } catch {}
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
 import { NoteCard, ViewMode } from './NoteCard';
 
 interface Props {
@@ -124,7 +147,10 @@ export const NoteList: React.FC<Props> = ({
               ✒️
             </div>
             <div>
-              <h1 className="font-black text-base text-stone-900 dark:text-slate-100 leading-none">다모아 펜</h1>
+              <div className="flex items-center gap-1.5">
+                <h1 className="font-black text-base text-stone-900 dark:text-slate-100 leading-none">다모아 펜</h1>
+                <span className="text-[10px] font-black px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-300 rounded-full leading-none">{APP_VERSION}</span>
+              </div>
               <p className="text-[11px] font-bold text-stone-400 dark:text-slate-500 mt-0.5">손글씨 전용 노트</p>
             </div>
           </div>
@@ -164,6 +190,11 @@ export const NoteList: React.FC<Props> = ({
                 </div>
               )}
             </div>
+            {/* 백업 내보내기 */}
+            <button type="button" onClick={handleBackupExport} title="백업 내보내기"
+              className="w-9 h-9 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 cursor-pointer">
+              <Download className="w-4 h-4 text-emerald-600 dark:text-emerald-400"/>
+            </button>
             {/* Settings */}
             <button type="button" onClick={onSettings}
               className="w-9 h-9 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 cursor-pointer">

@@ -51,12 +51,26 @@ export const SettingsModal: React.FC<Props> = ({ onClose, darkMode, onToggleDark
 
   const handleExport = async () => {
     const json = await exportAllNotes();
+    const filename = `damoa-pen-backup-${new Date().toISOString().slice(0,10)}.json`;
     const blob = new Blob([json], {type:'application/json'});
+    // Android WebView: Web Share API 우선 (파일 공유)
+    if (typeof navigator.share === 'function') {
+      try {
+        const file = new File([blob], filename, {type:'application/json'});
+        if (navigator.canShare && navigator.canShare({files:[file]})) {
+          await navigator.share({files:[file], title:'다모아 펜 백업'});
+          return;
+        }
+      } catch {}
+    }
+    // fallback: 다운로드 링크
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `damoa-pen-backup-${Date.now()}.json`;
+    a.download = filename;
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 
@@ -339,7 +353,7 @@ export const SettingsModal: React.FC<Props> = ({ onClose, darkMode, onToggleDark
 
           {/* Version */}
           <div className="text-center text-[11px] text-stone-300 dark:text-slate-600 font-bold">
-            다모아 펜 V1.0 · 로컬 저장 손글씨 앱
+            다모아 펜 V7.3 · 로컬 저장 손글씨 앱
           </div>
         </div>
       </div>

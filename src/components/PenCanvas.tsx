@@ -1069,10 +1069,12 @@ export const PenCanvas: React.FC<Props> = ({
 
         const pts = currentStrokeRef.current.points;
         const prev = pts[pts.length - 1];
-        if (prev) { const dx = p.x - prev.x, dy = p.y - prev.y; if (dx*dx + dy*dy < 2.5) continue; }
-        // 입력 포인트 EMA 스무딩 — alpha 낮출수록 더 부드러움 (0.45: 적당한 응답성 + 떨림 제거)
+        if (prev) { const dx = p.x - prev.x, dy = p.y - prev.y; if (dx*dx + dy*dy < 1.0) continue; }
+        // 입력 포인트 EMA 스무딩 — 만년필은 세그먼트가 많을수록 자연스러워서 alpha를 조금 높게
+        const isFountain = live.current.penType === 'fountain';
+        const alpha = isFountain ? 0.6 : 0.52;
         const smoothed: Point = prev
-          ? { x: p.x * 0.45 + prev.x * 0.55, y: p.y * 0.45 + prev.y * 0.55, pressure: p.pressure * 0.5 + prev.pressure * 0.5, t: p.t }
+          ? { x: p.x * alpha + prev.x * (1-alpha), y: p.y * alpha + prev.y * (1-alpha), pressure: p.pressure * 0.5 + prev.pressure * 0.5, t: p.t }
           : p;
         pts.push(smoothed);
         const ac = activeCanvasRef.current;
@@ -1099,7 +1101,7 @@ export const PenCanvas: React.FC<Props> = ({
         }
         // 펜 뗄 때 Laplacian 후처리 스무딩 (형광펜 직선은 제외)
         if (!(stroke.penType === 'highlighter' && stroke.points.length <= 2)) {
-          stroke = { ...stroke, points: laplacianSmooth(stroke.points, 3) };
+          stroke = { ...stroke, points: laplacianSmooth(stroke.points, 2) };
         }
         // undo history push
         const _pid = pages[ci]?.id;
@@ -1211,15 +1213,19 @@ export const PenCanvas: React.FC<Props> = ({
   // ── 검색어 위치 찾기 (Gemini 바운딩박스) ────────────────────────────────────
   const locateSearchTerm = useCallback(async (query: string) => {
     const apiKey = localStorage.getItem('damoa_gemini_api_key');
-    if (!apiKey || !query.trim()) return;
+    if (!apiKey) { setOcrMsg('🔍 검색 위치 탐색: Gemini API 키 미설정'); return; }
+    if (!query.trim()) return;
     // getExportDataUrl은 ref 기반이므로 deps에서 제외해도 안전
     const dataUrl = getExportDataUrl(); // eslint-disable-line react-hooks/exhaustive-deps
-    if (!dataUrl || dataUrl.length < 500) return; // 빈 캔버스 스킵
+    if (!dataUrl || dataUrl.length < 500) {
+      setOcrMsg('🔍 검색 위치 탐색: 캔버스 이미지 없음 (잠시 후 재시도)');
+      return;
+    }
     setLocatingSearch(true);
     try {
       const compressed = await compress(dataUrl, 1600, 0.85);
       const m = compressed.match(/^data:image\/(\w+);base64,(.+)$/);
-      if (!m) return;
+      if (!m) { setOcrMsg('🔍 이미지 압축 실패'); return; }
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
         { method:'POST', headers:{'Content-Type':'application/json'},
@@ -1229,11 +1235,12 @@ export const PenCanvas: React.FC<Props> = ({
           ]}], generationConfig:{maxOutputTokens:512,temperature:0} }) }
       );
       const json = await res.json();
+      if (json.error) { setOcrMsg(`🔍 Gemini 오류: ${json.error.message ?? JSON.stringify(json.error)}`); setSearchHighlights([]); return; }
       const raw = json.candidates?.[0]?.content?.parts?.[0]?.text ?? '[]';
       const arrMatch = raw.match(/\[[\s\S]*\]/);
-      if (!arrMatch) { setSearchHighlights([]); return; }
+      if (!arrMatch) { setOcrMsg(`🔍 응답 파싱 실패: ${raw.slice(0,80)}`); setSearchHighlights([]); return; }
       const boxes: number[][] = JSON.parse(arrMatch[0]);
-      if (!Array.isArray(boxes) || boxes.length === 0) { setSearchHighlights([]); return; }
+      if (!Array.isArray(boxes) || boxes.length === 0) { setOcrMsg(`🔍 "${query}" 위치 못 찾음`); setSearchHighlights([]); return; }
       const cvs = baseCanvasRef.current;
       const W = cvs ? cvs.offsetWidth  : window.innerWidth;
       const H = cvs ? cvs.offsetHeight : window.innerHeight;
@@ -1241,7 +1248,9 @@ export const PenCanvas: React.FC<Props> = ({
         x: (x0/1000)*W, y: (y0/1000)*H,
         w: ((x1-x0)/1000)*W, h: ((y1-y0)/1000)*H,
       })));
+      setOcrMsg(null); // 성공 시 메시지 제거
     } catch(e) {
+      setOcrMsg(`🔍 네트워크 오류: ${String(e).slice(0,60)}`);
       setSearchHighlights([]);
     } finally {
       setLocatingSearch(false);

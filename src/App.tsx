@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { FolderOpen, FolderPlus, X, ChevronRight, Tag } from 'lucide-react';
 import { PenNote, Folder, PenSettings } from './types';
 import { getAllNotes, saveNote, deleteNote, getFolders, saveFolder, deleteFolder } from './lib/storage';
@@ -18,10 +18,16 @@ export default function App() {
   const [view,        setView]        = useState<View>('list');
   const [editingNote, setEditingNote] = useState<PenNote | null>(null);
   const [showSettings,setShowSettings]= useState(false);
+  const [notesLoaded, setNotesLoaded] = useState(false);
+  const hasRestoredTabsRef            = useRef(false);
 
-  // ── 탭 시스템 ────────────────────────────────────────────────────────────
-  const [openTabs,    setOpenTabs]    = useState<Array<{noteId:string|null; title:string; color:string; pageIdx:number}>>([]);
-  const [activeTabIdx,setActiveTabIdx]= useState(0);
+  // ── 탭 시스템 (localStorage 영속) ────────────────────────────────────────
+  const [openTabs,    setOpenTabs]    = useState<Array<{noteId:string|null; title:string; color:string; pageIdx:number}>>(() => {
+    try { const s = localStorage.getItem('damoa_open_tabs'); return s ? JSON.parse(s) : []; } catch { return []; }
+  });
+  const [activeTabIdx,setActiveTabIdx]= useState(() => {
+    try { const s = localStorage.getItem('damoa_active_tab_idx'); return s ? parseInt(s, 10) : 0; } catch { return 0; }
+  });
   const [tabEditIdx,  setTabEditIdx]  = useState<number | null>(null); // 탭 편집 팝업
   const [isLocked,    setIsLocked]    = useState(() => localStorage.getItem(LOCK_KEY) === 'true');
   const [darkMode,    setDarkMode]    = useState(() => {
@@ -44,9 +50,14 @@ export default function App() {
     localStorage.setItem('damoa_pen_dark', String(darkMode));
   }, [darkMode]);
 
+  // 탭 변경 시 localStorage에 저장
+  useEffect(() => { localStorage.setItem('damoa_open_tabs', JSON.stringify(openTabs)); }, [openTabs]);
+  useEffect(() => { localStorage.setItem('damoa_active_tab_idx', String(activeTabIdx)); }, [activeTabIdx]);
+
   const loadNotes = useCallback(async () => {
     const all = await getAllNotes();
     setNotes(all);
+    setNotesLoaded(true);
   }, []);
 
   const loadFolders = useCallback(async () => {
@@ -55,6 +66,27 @@ export default function App() {
   }, []);
 
   useEffect(() => { loadNotes(); loadFolders(); }, [loadNotes, loadFolders]);
+
+  // 앱 시작 시 탭 복원 (notes 로드 완료 후 1회만)
+  useEffect(() => {
+    if (!notesLoaded || hasRestoredTabsRef.current) return;
+    hasRestoredTabsRef.current = true;
+    // 삭제된 노트의 탭 제거
+    const validTabs = openTabs.filter(t => !t.noteId || notes.some(n => n.id === t.noteId));
+    if (validTabs.length !== openTabs.length) setOpenTabs(validTabs);
+    if (validTabs.length === 0) return;
+    const safeIdx = Math.min(activeTabIdx, validTabs.length - 1);
+    const tab = validTabs[safeIdx];
+    if (tab?.noteId) {
+      const note = notes.find(n => n.id === tab.noteId);
+      if (note) {
+        setEditingNote(note);
+        setActiveTabIdx(safeIdx);
+        setView('canvas');
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notesLoaded]);
 
   // ── 표시 노트 필터링 ──────────────────────────────────────────────────────
   const filteredNotes = useMemo(() => {
@@ -177,6 +209,38 @@ export default function App() {
   const handlePageChange = useCallback((pageIdx: number) => {
     setOpenTabs(prev => prev.map((t, i) => i === activeTabIdx ? { ...t, pageIdx } : t));
   }, [activeTabIdx]);
+
+  // ── 페이지 병합 ────────────────────────────────────────────────────────────
+  const handleMergePages = useCallback(async (
+    sourcePageIdxes: number[],
+    targetNoteId: string,
+    insertAfter: number,   // -1 = 맨 앞, 0 = 1p 뒤, …
+  ) => {
+    if (!editingNote) return;
+    const targetNote = notes.find(n => n.id === targetNoteId);
+    if (!targetNote) return;
+
+    // source pageStrokes
+    const srcPages = editingNote.pageStrokes ?? [[]];
+    const movedPages = sourcePageIdxes.map(i => srcPages[i] ?? []);
+
+    // target pageStrokes with insertion
+    const tgtPages = [...(targetNote.pageStrokes ?? [[]])];
+    const insertIdx = insertAfter + 1; // -1→0 (맨 앞), 0→1 (1p 뒤), …
+    tgtPages.splice(insertIdx, 0, ...movedPages);
+
+    // save target note
+    await saveNote({ ...targetNote, pageStrokes: tgtPages, updatedAt: Date.now() });
+
+    // remove moved pages from source (keep remaining)
+    const remaining = srcPages.filter((_, i) => !sourcePageIdxes.includes(i));
+    const newSrc = remaining.length > 0 ? remaining : [[]];
+    const updatedSource: PenNote = { ...editingNote, pageStrokes: newSrc, updatedAt: Date.now() };
+    await saveNote(updatedSource);
+
+    await loadNotes();
+    setEditingNote(updatedSource);
+  }, [editingNote, notes, loadNotes]);
 
   // ── 탭 핸들러 ─────────────────────────────────────────────────────────────
   const handleTabSwitch = (idx: number) => {
@@ -402,6 +466,8 @@ export default function App() {
             onAutoSave={handleAutoSave}
             initialPageIdx={openTabs[activeTabIdx]?.pageIdx ?? 0}
             onPageChange={handlePageChange}
+            allNotes={notes}
+            onMergePages={handleMergePages}
           />
         )}
       </div>

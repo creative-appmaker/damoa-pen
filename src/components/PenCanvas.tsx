@@ -52,6 +52,9 @@ interface Props {
   onAutoSave?: (noteId: string | undefined, strokes: SavedStroke[][]) => void;
   initialPageIdx?: number;
   onPageChange?: (pageIdx: number) => void;
+  // 페이지 병합
+  allNotes?: PenNote[];
+  onMergePages?: (sourcePageIdxes: number[], targetNoteId: string, insertAfter: number) => Promise<void>;
 }
 
 // 페이지 데이터 (bgImageUrl 제거 — PDF는 pdfDocRef + 메모리 캐시로 처리)
@@ -136,6 +139,26 @@ function applyPenStyle(
 function resetCtxState(ctx: CanvasRenderingContext2D) {
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
+}
+
+/** Laplacian smoothing: 펜 뗀 후 포인트 좌표 부드럽게 정제 (시작/끝점 고정) */
+function laplacianSmooth(pts: Point[], iterations = 3): Point[] {
+  if (pts.length <= 2) return pts;
+  let result = pts;
+  for (let iter = 0; iter < iterations; iter++) {
+    const next: Point[] = [result[0]];
+    for (let i = 1; i < result.length - 1; i++) {
+      next.push({
+        x: (result[i - 1].x + result[i].x * 2 + result[i + 1].x) / 4,
+        y: (result[i - 1].y + result[i].y * 2 + result[i + 1].y) / 4,
+        pressure: result[i].pressure,
+        t: result[i].t,
+      });
+    }
+    next.push(result[result.length - 1]);
+    result = next;
+  }
+  return result;
 }
 
 function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
@@ -229,6 +252,8 @@ export const PenCanvas: React.FC<Props> = ({
   onAutoSave,
   initialPageIdx,
   onPageChange,
+  allNotes,
+  onMergePages,
 }) => {
   const baseCanvasRef   = useRef<HTMLCanvasElement | null>(null);
   const activeCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -290,6 +315,13 @@ export const PenCanvas: React.FC<Props> = ({
   const [pdfRenderMsg,  setPdfRenderMsg] = useState<string | null>(null); // "3/40페이지 렌더링 중..."
   const [pdfInvert,     setPdfInvert]    = useState(false); // PDF 반전 보기
   const [pageImages,    setPageImages]   = useState<(string|undefined)[]>(editingNote?.pageImages ?? []);
+  // ── 페이지 병합 모달 ────────────────────────────────────────────────────────
+  const [showMergeModal,   setShowMergeModal]   = useState(false);
+  const [mergeTargetNote,  setMergeTargetNote]  = useState<string>(''); // target note id
+  const [mergeSelPages,    setMergeSelPages]    = useState<number[]>([]);  // source page indexes
+  const [mergeInsertAfter, setMergeInsertAfter] = useState<number>(-1); // -1 = 맨 앞
+  const [mergeLoading,     setMergeLoading]     = useState(false);
+
   // ── 검색어 하이라이트 (캔버스 오버레이) ────────────────────────────────────
   const [searchHighlights, setSearchHighlights] = useState<{x:number;y:number;w:number;h:number}[]>([]);
   const [locatingSearch,   setLocatingSearch]   = useState(false);
@@ -1037,10 +1069,10 @@ export const PenCanvas: React.FC<Props> = ({
 
         const pts = currentStrokeRef.current.points;
         const prev = pts[pts.length - 1];
-        if (prev) { const dx = p.x - prev.x, dy = p.y - prev.y; if (dx*dx + dy*dy < 1.5) continue; }
-        // 입력 포인트 EMA 스무딩 (반응속도 유지하면서 미세 떨림 제거)
+        if (prev) { const dx = p.x - prev.x, dy = p.y - prev.y; if (dx*dx + dy*dy < 2.5) continue; }
+        // 입력 포인트 EMA 스무딩 — alpha 낮출수록 더 부드러움 (0.45: 적당한 응답성 + 떨림 제거)
         const smoothed: Point = prev
-          ? { x: p.x * 0.65 + prev.x * 0.35, y: p.y * 0.65 + prev.y * 0.35, pressure: p.pressure, t: p.t }
+          ? { x: p.x * 0.45 + prev.x * 0.55, y: p.y * 0.45 + prev.y * 0.55, pressure: p.pressure * 0.5 + prev.pressure * 0.5, t: p.t }
           : p;
         pts.push(smoothed);
         const ac = activeCanvasRef.current;
@@ -1065,6 +1097,10 @@ export const PenCanvas: React.FC<Props> = ({
           stroke = { ...stroke, points: [hlStartRef.current, ep] };
           hlStartRef.current = null;
         }
+        // 펜 뗄 때 Laplacian 후처리 스무딩 (형광펜 직선은 제외)
+        if (!(stroke.penType === 'highlighter' && stroke.points.length <= 2)) {
+          stroke = { ...stroke, points: laplacianSmooth(stroke.points, 3) };
+        }
         // undo history push
         const _pid = pages[ci]?.id;
         if (_pid) {
@@ -1075,6 +1111,8 @@ export const PenCanvas: React.FC<Props> = ({
         strokesRef.current.push(stroke);
         setPages(prev => prev.map((pg, i) => i === ci ? { ...pg, strokes: [...strokesRef.current] } : pg));
         currentStrokeRef.current = null;
+        // 후처리 스무딩이 적용된 최종 획을 base canvas에 반영
+        redrawBase();
         // 자동 저장 (탭 전환 시 손글씨 유지) — 1.5초 디바운스
         if (onAutoSave) {
           clearTimeout(autoSaveTimerRef.current);
@@ -1970,6 +2008,27 @@ export const PenCanvas: React.FC<Props> = ({
             className={`px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 ${showNoteInfo?'text-white':'text-white/40 hover:text-white/80'}`}>
             <Tag className="w-4 h-4"/>
           </button>
+
+          {/* ── 페이지 병합 ── */}
+          {allNotes && allNotes.length > 1 && (
+            <>
+              <div className="w-px h-4 bg-white/15 mx-1 shrink-0"/>
+              <button type="button" title="페이지 병합"
+                onClick={() => {
+                  setMergeSelPages([pageIdx]);
+                  setMergeTargetNote(allNotes.find(n => n.id !== editingNote?.id)?.id ?? '');
+                  setMergeInsertAfter(-1);
+                  setShowMergeModal(true);
+                }}
+                className="px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 text-white/40 hover:text-white/80">
+                {/* two overlapping pages icon */}
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="1" y="4" width="9" height="11" rx="1.5"/>
+                  <path d="M5 4V2.5A1.5 1.5 0 0 1 6.5 1h8A1.5 1.5 0 0 1 16 2.5v9A1.5 1.5 0 0 1 14.5 13H12" strokeWidth="1.3"/>
+                </svg>
+              </button>
+            </>
+          )}
         </div>
 
         {/* Row 2.5: 종이 설정 패널 */}
@@ -2122,6 +2181,106 @@ export const PenCanvas: React.FC<Props> = ({
               style={{background:'rgba(124,58,237,0.92)', backdropFilter:'blur(8px)', color:'#fff'}}>
               <span className="truncate">{ocrMsg}</span>
               <button type="button" onClick={() => setOcrMsg(null)} className="text-white/70 hover:text-white font-black cursor-pointer shrink-0 text-sm">✕</button>
+            </div>
+          </div>
+        )}
+
+        {/* ── 페이지 병합 모달 ── */}
+        {showMergeModal && allNotes && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center"
+            style={{background:'rgba(0,0,0,0.7)', backdropFilter:'blur(4px)'}}>
+            <div className="bg-zinc-900 rounded-2xl p-5 w-80 max-w-[92vw] flex flex-col gap-4 shadow-2xl border border-white/10">
+              <div className="flex items-center justify-between">
+                <span className="text-white font-black text-sm">페이지 병합</span>
+                <button type="button" onClick={() => setShowMergeModal(false)}
+                  className="text-white/40 hover:text-white cursor-pointer">
+                  <X className="w-4 h-4"/>
+                </button>
+              </div>
+
+              {/* 원본 페이지 선택 */}
+              <div>
+                <div className="text-[10px] font-black text-white/40 uppercase tracking-wider mb-2">이동할 페이지 선택</div>
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                  {pages.map((_, i) => (
+                    <button key={i} type="button"
+                      onClick={() => setMergeSelPages(sel =>
+                        sel.includes(i) ? sel.filter(x => x !== i) : [...sel, i].sort((a,b) => a-b)
+                      )}
+                      className={`w-9 h-9 rounded-lg text-xs font-black cursor-pointer active:scale-95 transition-colors ${
+                        mergeSelPages.includes(i)
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-white/10 text-white/50 hover:bg-white/20'
+                      }`}>
+                      {i + 1}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 대상 노트 선택 */}
+              <div>
+                <div className="text-[10px] font-black text-white/40 uppercase tracking-wider mb-2">대상 노트</div>
+                <select value={mergeTargetNote} onChange={e => setMergeTargetNote(e.target.value)}
+                  className="w-full bg-white/10 text-white text-xs rounded-lg px-3 py-2 border border-white/15 outline-none cursor-pointer">
+                  {allNotes.filter(n => n.id !== editingNote?.id).map(n => (
+                    <option key={n.id} value={n.id} style={{background:'#1a1a1a'}}>
+                      {n.title || '(제목 없음)'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* 삽입 위치 */}
+              <div>
+                <div className="text-[10px] font-black text-white/40 uppercase tracking-wider mb-2">삽입 위치</div>
+                {(() => {
+                  const targetNote = allNotes.find(n => n.id === mergeTargetNote);
+                  const targetPageCount = targetNote?.pageStrokes?.length ?? 1;
+                  return (
+                    <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                      <button type="button"
+                        onClick={() => setMergeInsertAfter(-1)}
+                        className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer active:scale-95 transition-colors ${
+                          mergeInsertAfter === -1
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-white/10 text-white/50 hover:bg-white/20'
+                        }`}>
+                        맨 앞
+                      </button>
+                      {Array.from({length: targetPageCount}, (_, i) => (
+                        <button key={i} type="button"
+                          onClick={() => setMergeInsertAfter(i)}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer active:scale-95 transition-colors ${
+                            mergeInsertAfter === i
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-white/10 text-white/50 hover:bg-white/20'
+                          }`}>
+                          {i + 1}p 뒤
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* 확인 버튼 */}
+              <button type="button"
+                disabled={mergeSelPages.length === 0 || !mergeTargetNote || mergeLoading}
+                onClick={async () => {
+                  if (!onMergePages || mergeSelPages.length === 0 || !mergeTargetNote) return;
+                  setMergeLoading(true);
+                  try {
+                    await onMergePages(mergeSelPages, mergeTargetNote, mergeInsertAfter);
+                    setShowMergeModal(false);
+                  } finally {
+                    setMergeLoading(false);
+                  }
+                }}
+                className="w-full py-2.5 rounded-xl text-sm font-black cursor-pointer active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                style={{background: mergeSelPages.length > 0 && mergeTargetNote ? 'rgba(124,58,237,0.9)' : undefined, color:'#fff'}}>
+                {mergeLoading ? '이동 중...' : `${mergeSelPages.length}페이지 이동`}
+              </button>
             </div>
           </div>
         )}

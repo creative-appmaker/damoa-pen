@@ -1174,8 +1174,9 @@ export const PenCanvas: React.FC<Props> = ({
   const locateSearchTerm = useCallback(async (query: string) => {
     const apiKey = localStorage.getItem('damoa_gemini_api_key');
     if (!apiKey || !query.trim()) return;
-    const dataUrl = getExportDataUrl();
-    if (!dataUrl) return;
+    // getExportDataUrl은 ref 기반이므로 deps에서 제외해도 안전
+    const dataUrl = getExportDataUrl(); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!dataUrl || dataUrl.length < 500) return; // 빈 캔버스 스킵
     setLocatingSearch(true);
     try {
       const compressed = await compress(dataUrl, 1600, 0.85);
@@ -1207,14 +1208,17 @@ export const PenCanvas: React.FC<Props> = ({
     } finally {
       setLocatingSearch(false);
     }
-  }, [getExportDataUrl]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // 검색어가 있을 때 자동 위치 탐색 (페이지 이동 후 충분히 지연)
+  // 검색어가 있을 때 자동 위치 탐색 (페이지 로드 후 충분히 지연)
+  // editingNote?.id 도 deps에 추가 → 같은 검색어로 다른 노트 열어도 re-trigger
   useEffect(() => {
     if (!initialSearchQuery?.trim()) { setSearchHighlights([]); return; }
-    const t = setTimeout(() => locateSearchTerm(initialSearchQuery), 1200);
+    const t = setTimeout(() => locateSearchTerm(initialSearchQuery), 1400);
     return () => clearTimeout(t);
-  }, [initialSearchQuery, pageIdx, locateSearchTerm]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSearchQuery, pageIdx, editingNote?.id]);
 
   // ── 사진 첨부 ──────────────────────────────────────────────────────────────
   const importImage = useCallback(async (file: File) => {
@@ -2093,8 +2097,8 @@ export const PenCanvas: React.FC<Props> = ({
             <div key={i} style={{
               position: 'absolute',
               left: box.x, top: box.y, width: box.w, height: box.h,
-              background: 'rgba(253,224,71,0.28)',
-              border: '2px solid rgba(250,200,0,0.85)',
+              background: 'rgba(59,130,246,0.12)',
+              border: '2px solid rgba(59,130,246,0.9)',
               borderRadius: '4px',
               pointerEvents: 'none',
               zIndex: 8,

@@ -36,6 +36,7 @@ interface Props {
     id?: string,
     pageOcrTexts?: string[],
     pageWordBoxes?: WordBox[][],
+    ocrCanvasDims?: { w: number; h: number },
   ) => void;
   onBack: () => void;
   initialSearchQuery?: string; // 검색어 → 해당 페이지로 이동
@@ -1218,8 +1219,10 @@ export const PenCanvas: React.FC<Props> = ({
     if (!query.trim()) return;
     const q = query.trim().toLowerCase();
     const cvs = baseCanvasRef.current;
-    const W = cvs ? cvs.offsetWidth  : window.innerWidth;
-    const H = cvs ? cvs.offsetHeight : window.innerHeight;
+    // OCR 당시 저장된 캔버스 크기 우선 사용 → 현재 기기 크기와 달라도 좌표 정확
+    const dims = live.current.editingNote?.ocrCanvasDims;
+    const W = dims?.w ?? (cvs ? cvs.offsetWidth  : window.innerWidth);
+    const H = dims?.h ?? (cvs ? cvs.offsetHeight : window.innerHeight);
 
     // ── 저장된 WordBox 우선 사용 (오프라인) ─────────────────────────────────
     const storedBoxes = live.current.editingNote?.pageWordBoxes?.[live.current.pageIdx] ?? [];
@@ -1273,7 +1276,7 @@ export const PenCanvas: React.FC<Props> = ({
   // editingNote?.id 도 deps에 추가 → 같은 검색어로 다른 노트 열어도 re-trigger
   useEffect(() => {
     if (!initialSearchQuery?.trim()) { setSearchHighlights([]); return; }
-    const t = setTimeout(() => locateSearchTerm(initialSearchQuery), 1400);
+    const t = setTimeout(() => locateSearchTerm(initialSearchQuery), 350);
     return () => clearTimeout(t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSearchQuery, pageIdx, editingNote?.id]);
@@ -1342,12 +1345,12 @@ export const PenCanvas: React.FC<Props> = ({
     const visionApiKey = localStorage.getItem('damoa_vision_api_key') ?? '';
     const pageOcrTexts: string[] = [];
     const pageWordBoxes: WordBox[][] = [];
+    const canvasW = containerRef.current?.clientWidth  || 1200;
+    const canvasH = containerRef.current?.clientHeight || 1600;
 
     if (visionApiKey) {
       setIsOcrLoading(true);
       const { extractHandwritingImage, runCloudVisionOcrFull } = await import('../lib/inkOcr');
-      const canvasW = containerRef.current?.clientWidth  || 1200;
-      const canvasH = containerRef.current?.clientHeight || 1600;
       const SCALE = 2;
 
       for (let pi = 0; pi < allPageStrokes.length; pi++) {
@@ -1408,6 +1411,7 @@ export const PenCanvas: React.FC<Props> = ({
       editingNote?.id,
       pageOcrTexts.some(Boolean) ? pageOcrTexts : undefined,
       pageWordBoxes.some(b => b.length > 0) ? pageWordBoxes : undefined,
+      pageWordBoxes.some(b => b.length > 0) ? { w: canvasW, h: canvasH } : undefined,
     );
   };
 

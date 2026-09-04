@@ -149,6 +149,7 @@ export default function App() {
     id?: string,
     pageOcrTexts?: string[],
     pageWordBoxes?: import('./types').WordBox[][],
+    ocrCanvasDims?: { w: number; h: number },
   ) => {
     const now = Date.now();
     const noteId = id || `note-${now}-${Math.random().toString(36).slice(2)}`;
@@ -171,6 +172,7 @@ export default function App() {
       pageImages:    pageImages    ?? editingNote?.pageImages,
       pageOcrTexts:  pageOcrTexts  ?? editingNote?.pageOcrTexts,
       pageWordBoxes: pageWordBoxes ?? editingNote?.pageWordBoxes,
+      ocrCanvasDims: ocrCanvasDims ?? editingNote?.ocrCanvasDims,
     };
     await saveNote(note);
     await loadNotes();

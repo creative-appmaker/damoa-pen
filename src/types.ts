@@ -43,6 +43,7 @@ export interface PenNote {
   tabColor?: string;                     // 탭 색상
   pageOcrTexts?: string[];               // 페이지별 OCR 텍스트 (검색 → 페이지 이동용)
   pageWordBoxes?: WordBox[][];           // 페이지별 단어 바운딩 박스 (오프라인 검색 하이라이트용)
+  ocrCanvasDims?: { w: number; h: number }; // OCR 당시 캔버스 CSS 픽셀 크기 (좌표 정확도용)
 }
 
 /** 단어 바운딩 박스 — 좌표는 캔버스 CSS 픽셀 비율 (0.0~1.0) */

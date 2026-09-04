@@ -167,7 +167,7 @@ export const SettingsModal: React.FC<Props> = ({ onClose, darkMode, onToggleDark
             if (text && !newTexts[pi]) newTexts[pi] = text;
           } catch { /* 실패 시 해당 페이지 스킵 */ }
         }
-        await saveNote({ ...note, pageWordBoxes: newBoxes, pageOcrTexts: newTexts, updatedAt: Date.now() });
+        await saveNote({ ...note, pageWordBoxes: newBoxes, pageOcrTexts: newTexts, updatedAt: Date.now(), ocrCanvasDims: note.ocrCanvasDims ?? { w: canvasW, h: canvasH } });
         done++;
       }
       setReindexMsg(`✅ 완료! ${done}개 노트에 위치 정보가 저장되었습니다.`);

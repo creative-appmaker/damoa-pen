@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, Key, Download, Upload, Trash2, Check, Lock, LockOpen, ShieldCheck } from 'lucide-react';
-import { exportAllNotes, importNotes } from '../lib/storage';
+import { X, Key, Download, Upload, Trash2, Check, Lock, LockOpen, ShieldCheck, RefreshCw } from 'lucide-react';
+import { exportAllNotes, importNotes, getAllNotes, saveNote } from '../lib/storage';
 import { PatternInput, PinInput, hashSecret, LOCK_KEY, TYPE_KEY, HASH_KEY, HINT_KEY } from './LockScreen';
 
 interface Props {
@@ -22,7 +22,9 @@ export const SettingsModal: React.FC<Props> = ({ onClose, darkMode, onToggleDark
   const [apiKey,       setApiKey]       = useState('');
   const [visionKey,    setVisionKey]    = useState('');
   const [saved,        setSaved]        = useState(false);
-  const [importMsg, setImportMsg] = useState('');
+  const [importMsg,    setImportMsg]    = useState('');
+  const [reindexMsg,   setReindexMsg]   = useState('');
+  const [reindexing,   setReindexing]   = useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
 
   // ── Security state ──────────────────────────────────────────────────────
@@ -131,6 +133,51 @@ export const SettingsModal: React.FC<Props> = ({ onClose, darkMode, onToggleDark
     }
   };
 
+  const handleReindex = async () => {
+    const key = localStorage.getItem('damoa_vision_api_key');
+    if (!key) { setReindexMsg('❌ Cloud Vision API 키를 먼저 저장하세요.'); return; }
+    setReindexing(true);
+    setReindexMsg('');
+    try {
+      const { extractHandwritingImage, runCloudVisionOcrFull } = await import('../lib/inkOcr');
+      const notes = await getAllNotes();
+      // pageWordBoxes가 없는 노트만 처리
+      const targets = notes.filter(n =>
+        n.pageStrokes?.some(pg => pg.length > 0) &&
+        (!n.pageWordBoxes || n.pageWordBoxes.every(pg => pg.length === 0))
+      );
+      if (targets.length === 0) { setReindexMsg('✅ 모든 노트가 이미 최신 상태입니다.'); setReindexing(false); return; }
+
+      let done = 0;
+      for (const note of targets) {
+        const pages = note.pageStrokes ?? [[]];
+        const existingBoxes = note.pageWordBoxes ?? [];
+        const newBoxes = [...existingBoxes];
+        const newTexts = [...(note.pageOcrTexts ?? [])];
+        const canvasW = 1200, canvasH = 1600, SCALE = 2;
+
+        for (let pi = 0; pi < pages.length; pi++) {
+          if (!pages[pi]?.length) continue;
+          if (existingBoxes[pi]?.length > 0) continue; // 이미 있는 페이지 스킵
+          setReindexMsg(`🔄 ${done + 1}/${targets.length} 노트 처리 중... (${note.title || '제목없음'})`);
+          try {
+            const imgBase64 = extractHandwritingImage(pages[pi] as any, canvasW, canvasH, SCALE);
+            const { text, wordBoxes: wb } = await runCloudVisionOcrFull(imgBase64, key, SCALE, canvasW, canvasH);
+            newBoxes[pi] = wb.map(b => ({ text: b.text, x: b.xFrac, y: b.yFrac, w: b.wFrac, h: b.hFrac }));
+            if (text && !newTexts[pi]) newTexts[pi] = text;
+          } catch { /* 실패 시 해당 페이지 스킵 */ }
+        }
+        await saveNote({ ...note, pageWordBoxes: newBoxes, pageOcrTexts: newTexts, updatedAt: Date.now() });
+        done++;
+      }
+      setReindexMsg(`✅ 완료! ${done}개 노트에 위치 정보가 저장되었습니다.`);
+    } catch (e) {
+      setReindexMsg(`❌ 오류: ${String(e).slice(0, 80)}`);
+    } finally {
+      setReindexing(false);
+    }
+  };
+
   const handleClearAll = async () => {
     if (!confirm('모든 노트를 삭제할까요? 이 작업은 되돌릴 수 없습니다.')) return;
     const { deleteNote, getAllNotes } = await import('../lib/storage');
@@ -189,6 +236,18 @@ export const SettingsModal: React.FC<Props> = ({ onClose, darkMode, onToggleDark
             </div>
             {visionKey && (
               <p className="text-[11px] text-emerald-600 font-bold mt-1.5">✅ Cloud Vision 키 설정됨 — 저장 시 손글씨 인식이 실행됩니다.</p>
+            )}
+            {/* 전체 노트 재인식 */}
+            <button type="button" onClick={handleReindex} disabled={reindexing}
+              className="mt-3 w-full flex items-center gap-3 px-4 py-3 bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 rounded-2xl hover:bg-purple-100 dark:hover:bg-purple-950/60 cursor-pointer disabled:opacity-50">
+              <RefreshCw className={`w-4 h-4 text-purple-600 ${reindexing ? 'animate-spin' : ''}`}/>
+              <div className="text-left">
+                <div className="font-black text-sm text-purple-900 dark:text-purple-200">검색 위치 일괄 생성</div>
+                <div className="text-[11px] text-purple-600 dark:text-purple-400">위치 정보 없는 기존 노트만 처리 (중복 제외)</div>
+              </div>
+            </button>
+            {reindexMsg && (
+              <p className="text-[11px] font-bold mt-1.5 px-2 py-1.5 bg-stone-100 dark:bg-slate-800 rounded-xl text-stone-700 dark:text-slate-300">{reindexMsg}</p>
             )}
           </div>
 

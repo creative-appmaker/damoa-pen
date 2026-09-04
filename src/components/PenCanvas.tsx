@@ -1361,7 +1361,7 @@ export const PenCanvas: React.FC<Props> = ({
         try {
           setOcrMsg(`🌐 페이지 ${pi + 1}/${allPageStrokes.length} 인식 중...`);
           const imgBase64 = extractHandwritingImage(pgStrokes as any, canvasW, canvasH, SCALE);
-          const { text, wordBoxes: wb } = await runCloudVisionOcrFull(imgBase64, visionApiKey, SCALE);
+          const { text, wordBoxes: wb } = await runCloudVisionOcrFull(imgBase64, visionApiKey, SCALE, canvasW, canvasH);
           pageOcrTexts.push(text || existingText);
           pageWordBoxes.push(wb.map(b => ({ text: b.text, x: b.xFrac, y: b.yFrac, w: b.wFrac, h: b.hFrac })));
         } catch (e) {

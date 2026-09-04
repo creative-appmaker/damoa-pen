@@ -113,7 +113,8 @@ export default function App() {
     setView('canvas');
   };
 
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery,     setSearchQuery]     = useState('');
+  const [listSearchQuery, setListSearchQuery] = useState(''); // 목록 검색어 (view 전환해도 유지)
 
   const handleEdit = (note: PenNote, query?: string) => {
     if (query !== undefined) setSearchQuery(query);
@@ -445,6 +446,8 @@ export default function App() {
               onOpenFolderPanel={() => setShowFolderPanel(true)}
               onSettings={() => setShowSettings(true)}
               darkMode={darkMode}
+              searchQuery={listSearchQuery}
+              onSearchQueryChange={setListSearchQuery}
             />
           </>
         ) : (

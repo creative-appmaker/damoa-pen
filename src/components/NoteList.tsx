@@ -40,6 +40,8 @@ interface Props {
   onOpenFolderPanel?: () => void;
   onSettings: () => void;
   darkMode: boolean;
+  searchQuery?: string;
+  onSearchQueryChange?: (q: string) => void;
 }
 
 type SortMode = 'updatedAt' | 'createdAt' | 'title';
@@ -54,8 +56,14 @@ const VIEW_MODES: { mode: ViewMode; icon: React.ReactNode; label: string }[] = [
 export const NoteList: React.FC<Props> = ({
   notes, folders, onNew, onEdit, onDelete, onTogglePin,
   onMoveToFolder, onOpenFolderPanel, onSettings, darkMode,
+  searchQuery: externalQuery, onSearchQueryChange,
 }) => {
-  const [query,         setQuery]         = useState('');
+  const [internalQuery, setInternalQuery] = useState('');
+  const query = externalQuery !== undefined ? externalQuery : internalQuery;
+  const setQuery = (q: string) => {
+    setInternalQuery(q);
+    onSearchQueryChange?.(q);
+  };
   const [showPinnedOnly,setShowPinnedOnly]= useState(false);
   const [sortMode,      setSortMode]      = useState<SortMode>('updatedAt');
   const [showSort,      setShowSort]      = useState(false);

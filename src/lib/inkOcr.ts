@@ -82,6 +82,8 @@ export async function runCloudVisionOcrFull(
   imageBase64: string,
   apiKey: string,
   scale = 2,
+  canvasW = 1200,
+  canvasH = 1600,
 ): Promise<{ text: string; wordBoxes: VisionWordBox[] }> {
   const url = `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`;
   const body = {
@@ -102,24 +104,21 @@ export async function runCloudVisionOcrFull(
 
   // textAnnotations[0] = 전체, [1..] = 단어별
   const annotations: any[] = data.responses?.[0]?.textAnnotations ?? [];
-  // 이미지 실제 크기 = canvasCSS * scale (extractHandwritingImage 기준)
-  // 첫 annotation vertices로 이미지 크기 추정
-  const allV = annotations[0]?.boundingPoly?.vertices ?? [];
-  const imgW = allV.reduce((m: number, v: any) => Math.max(m, v.x ?? 0), 0) || 1;
-  const imgH = allV.reduce((m: number, v: any) => Math.max(m, v.y ?? 0), 0) || 1;
+  // 이미지 실제 픽셀 크기 = canvasW*scale x canvasH*scale (extractHandwritingImage 기준)
+  // 이 값으로 나눠 0~1 정규화 → 화면 크기에 무관하게 정확한 위치 복원 가능
+  const physW = canvasW * scale;
+  const physH = canvasH * scale;
 
   const wordBoxes: VisionWordBox[] = annotations.slice(1).map((a: any) => {
     const verts: {x:number;y:number}[] = a.boundingPoly?.vertices ?? [];
     const xs = verts.map((v:any) => v.x ?? 0);
     const ys = verts.map((v:any) => v.y ?? 0);
-    // scale로 나눠서 CSS 픽셀 → 다시 이미지 크기(CSS 기준)로 정규화
-    const x0 = Math.min(...xs) / scale, y0 = Math.min(...ys) / scale;
-    const x1 = Math.max(...xs) / scale, y1 = Math.max(...ys) / scale;
-    const csW = imgW / scale, csH = imgH / scale;
+    const x0 = Math.min(...xs), y0 = Math.min(...ys);
+    const x1 = Math.max(...xs), y1 = Math.max(...ys);
     return {
       text: a.description ?? '',
-      xFrac: x0 / csW, yFrac: y0 / csH,
-      wFrac: (x1 - x0) / csW, hFrac: (y1 - y0) / csH,
+      xFrac: x0 / physW, yFrac: y0 / physH,
+      wFrac: (x1 - x0) / physW, hFrac: (y1 - y0) / physH,
     };
   }).filter((b: VisionWordBox) => b.text.trim());
 

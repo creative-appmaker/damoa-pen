@@ -1212,43 +1212,68 @@ export const PenCanvas: React.FC<Props> = ({
 
   // ── 검색어 위치 찾기 (Gemini 바운딩박스) ────────────────────────────────────
   const locateSearchTerm = useCallback(async (query: string) => {
-    const apiKey = localStorage.getItem('damoa_gemini_api_key');
-    if (!apiKey) { setOcrMsg('🔍 검색 위치 탐색: Gemini API 키 미설정'); return; }
+    const apiKey = localStorage.getItem('damoa_vision_api_key');
+    if (!apiKey) { setOcrMsg('🔍 검색 위치 탐색: Cloud Vision API 키 미설정'); return; }
     if (!query.trim()) return;
     // getExportDataUrl은 ref 기반이므로 deps에서 제외해도 안전
     const dataUrl = getExportDataUrl(); // eslint-disable-line react-hooks/exhaustive-deps
     if (!dataUrl || dataUrl.length < 500) {
-      setOcrMsg('🔍 검색 위치 탐색: 캔버스 이미지 없음 (잠시 후 재시도)');
+      setOcrMsg('🔍 검색 위치 탐색: 캔버스 이미지 없음');
       return;
     }
     setLocatingSearch(true);
     try {
       const compressed = await compress(dataUrl, 1600, 0.85);
-      const m = compressed.match(/^data:image\/(\w+);base64,(.+)$/);
+      const m = compressed.match(/^data:image\/\w+;base64,(.+)$/);
       if (!m) { setOcrMsg('🔍 이미지 압축 실패'); return; }
+
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-        { method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ contents:[{parts:[
-            {text:`이 손글씨 이미지에서 "${query.trim()}"라는 텍스트를 찾아주세요. 찾은 모든 위치의 바운딩 박스를 JSON 배열로만 반환해주세요. 형식: [[y_min,x_min,y_max,x_max],...] (값 범위 0-1000, 이미지 전체 대비 정규화). 찾지 못하면 []만 반환. 다른 텍스트 절대 포함하지 마세요.`},
-            {inline_data:{mime_type:`image/${m[1]}`,data:m[2]}}
-          ]}], generationConfig:{maxOutputTokens:512,temperature:0} }) }
+        `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ requests: [{ image: { content: m[1] },
+            features: [{ type: 'DOCUMENT_TEXT_DETECTION' }] }] }) }
       );
       const json = await res.json();
-      if (json.error) { setOcrMsg(`🔍 Gemini 오류: ${json.error.message ?? JSON.stringify(json.error)}`); setSearchHighlights([]); return; }
-      const raw = json.candidates?.[0]?.content?.parts?.[0]?.text ?? '[]';
-      const arrMatch = raw.match(/\[[\s\S]*\]/);
-      if (!arrMatch) { setOcrMsg(`🔍 응답 파싱 실패: ${raw.slice(0,80)}`); setSearchHighlights([]); return; }
-      const boxes: number[][] = JSON.parse(arrMatch[0]);
-      if (!Array.isArray(boxes) || boxes.length === 0) { setOcrMsg(`🔍 "${query}" 위치 못 찾음`); setSearchHighlights([]); return; }
+      if (json.error) { setOcrMsg(`🔍 Vision 오류: ${json.error.message ?? ''}`); setSearchHighlights([]); return; }
+
+      // textAnnotations: [0]=전체텍스트, [1..]=단어별
+      const annotations: any[] = json.responses?.[0]?.textAnnotations ?? [];
+      if (annotations.length === 0) { setOcrMsg(`🔍 "${query}" 위치 못 찾음`); setSearchHighlights([]); return; }
+
+      // 이미지 실제 픽셀 크기 (compress로 보낸 크기)
       const cvs = baseCanvasRef.current;
-      const W = cvs ? cvs.offsetWidth  : window.innerWidth;
-      const H = cvs ? cvs.offsetHeight : window.innerHeight;
-      setSearchHighlights(boxes.map(([y0,x0,y1,x1]) => ({
-        x: (x0/1000)*W, y: (y0/1000)*H,
-        w: ((x1-x0)/1000)*W, h: ((y1-y0)/1000)*H,
-      })));
-      setOcrMsg(null); // 성공 시 메시지 제거
+      const cssW = cvs ? Math.round(cvs.width / (window.devicePixelRatio || 1)) : window.innerWidth;
+      const cssH = cvs ? Math.round(cvs.height / (window.devicePixelRatio || 1)) : window.innerHeight;
+      // compress()는 최대 1600px로 축소 — 실제 이미지 크기를 첫 annotation의 vertices로 추정
+      const allVerts = annotations[0]?.boundingPoly?.vertices ?? [];
+      const imgW = allVerts.reduce((mx: number, v: any) => Math.max(mx, v.x ?? 0), 0) || cssW;
+      const imgH = allVerts.reduce((mx: number, v: any) => Math.max(mx, v.y ?? 0), 0) || cssH;
+      const scaleX = cssW / imgW;
+      const scaleY = cssH / imgH;
+
+      const q = query.trim().toLowerCase();
+      // 단어 단위 매칭: description이 검색어를 포함하는 모든 annotation 수집
+      const matched = annotations.slice(1).filter((a: any) =>
+        (a.description ?? '').toLowerCase().includes(q)
+      );
+      // 검색어가 여러 단어면 연속 단어들을 묶어서도 탐색
+      if (matched.length === 0) {
+        // 전체 텍스트에서 위치 찾기 (첫 번째 annotation은 전체)
+        setOcrMsg(`🔍 "${query}" 위치 못 찾음`);
+        setSearchHighlights([]); return;
+      }
+
+      setSearchHighlights(matched.map((a: any) => {
+        const verts: {x:number;y:number}[] = a.boundingPoly?.vertices ?? [];
+        const xs = verts.map((v:any) => v.x ?? 0);
+        const ys = verts.map((v:any) => v.y ?? 0);
+        const x0 = Math.min(...xs) * scaleX;
+        const y0 = Math.min(...ys) * scaleY;
+        const x1 = Math.max(...xs) * scaleX;
+        const y1 = Math.max(...ys) * scaleY;
+        return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+      }));
+      setOcrMsg(null);
     } catch(e) {
       setOcrMsg(`🔍 네트워크 오류: ${String(e).slice(0,60)}`);
       setSearchHighlights([]);

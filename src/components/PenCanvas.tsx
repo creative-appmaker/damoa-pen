@@ -332,6 +332,7 @@ export const PenCanvas: React.FC<Props> = ({
   const addPageRef             = useRef<() => void>(() => {});
   const goToPageRef            = useRef<(idx: number) => void>(() => {});
   const animatedGoToPageRef    = useRef<(idx: number) => void>(() => {});
+  const locateSearchTermRef    = useRef<(query: string, pageIdxOverride?: number) => void>(() => {});
   const pagesLenRef            = useRef<number>(1);
   const autoSaveTimerRef       = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const undoHistoriesRef = useRef<Map<string, Stroke[][]>>(new Map());
@@ -693,11 +694,21 @@ export const PenCanvas: React.FC<Props> = ({
     }
 
     // 검색어가 있으면 해당 keyword가 있는 페이지로 이동 (setTimeout으로 상태 정착 후)
-    if (initialSearchQuery && editingNote?.pageOcrTexts) {
+    if (initialSearchQuery && editingNote) {
       const q = initialSearchQuery.toLowerCase();
-      const targetIdx = editingNote.pageOcrTexts.findIndex(t => t.toLowerCase().includes(q));
+      // pageOcrTexts 우선, 없으면 pageWordBoxes 텍스트에서 탐색
+      let targetIdx = (editingNote.pageOcrTexts ?? []).findIndex(t => t.toLowerCase().includes(q));
+      if (targetIdx < 0) {
+        targetIdx = (editingNote.pageWordBoxes ?? []).findIndex(
+          boxes => boxes.some(b => b.text.toLowerCase().includes(q))
+        );
+      }
       if (targetIdx > 0) {
-        setTimeout(() => goToPageRef.current(targetIdx), 100);
+        setTimeout(() => {
+          goToPageRef.current(targetIdx);
+          // 페이지 이동 후 하이라이트: targetIdx를 직접 전달해 stale pageIdx 문제 방지
+          setTimeout(() => locateSearchTermRef.current(initialSearchQuery, targetIdx), 350);
+        }, 100);
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1215,7 +1226,7 @@ export const PenCanvas: React.FC<Props> = ({
   };
 
   // ── 검색어 위치 찾기 (Gemini 바운딩박스) ────────────────────────────────────
-  const locateSearchTerm = useCallback((query: string) => {
+  const locateSearchTerm = useCallback((query: string, pageIdxOverride?: number) => {
     if (!query.trim()) return;
     const q = query.trim().toLowerCase();
     const cvs = baseCanvasRef.current;
@@ -1225,7 +1236,8 @@ export const PenCanvas: React.FC<Props> = ({
     const H = dims?.h ?? (cvs ? cvs.offsetHeight : window.innerHeight);
 
     // ── 저장된 WordBox 우선 사용 (오프라인) ─────────────────────────────────
-    const storedBoxes = live.current.editingNote?.pageWordBoxes?.[live.current.pageIdx] ?? [];
+    const pageIdx = pageIdxOverride ?? live.current.pageIdx;
+    const storedBoxes = live.current.editingNote?.pageWordBoxes?.[pageIdx] ?? [];
     if (storedBoxes.length > 0) {
       const matched = storedBoxes.filter((b: WordBox) => b.text.toLowerCase().includes(q));
 
@@ -1453,6 +1465,7 @@ export const PenCanvas: React.FC<Props> = ({
   addPageRef.current          = addPage;
   goToPageRef.current         = goToPage;
   pagesLenRef.current         = pages.length;
+  locateSearchTermRef.current = locateSearchTerm;
 
   // ── 페이지 전환 슬라이드 애니메이션 ──────────────────────────────────────
   const animatedGoToPage = (idx: number) => {

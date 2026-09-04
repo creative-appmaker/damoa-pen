@@ -42,6 +42,16 @@ export interface PenNote {
   pageImages?: (string | undefined)[];   // 페이지별 첨부 사진 (base64 JPEG)
   tabColor?: string;                     // 탭 색상
   pageOcrTexts?: string[];               // 페이지별 OCR 텍스트 (검색 → 페이지 이동용)
+  pageWordBoxes?: WordBox[][];           // 페이지별 단어 바운딩 박스 (오프라인 검색 하이라이트용)
+}
+
+/** 단어 바운딩 박스 — 좌표는 캔버스 CSS 픽셀 비율 (0.0~1.0) */
+export interface WordBox {
+  text: string;
+  x: number; // 왼쪽 (캔버스 width 비율)
+  y: number; // 위쪽 (캔버스 height 비율)
+  w: number; // 너비 (캔버스 width 비율)
+  h: number; // 높이 (캔버스 height 비율)
 }
 
 // ── 펜 설정 ───────────────────────────────────────────────────────────────────

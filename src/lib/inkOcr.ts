@@ -61,6 +61,28 @@ export async function runCloudVisionOcr(
   imageBase64: string,
   apiKey: string,
 ): Promise<string> {
+  const { text } = await runCloudVisionOcrFull(imageBase64, apiKey, 1);
+  return text;
+}
+
+export interface VisionWordBox {
+  text: string;
+  xFrac: number; // 0~1 (이미지 너비 비율)
+  yFrac: number; // 0~1 (이미지 높이 비율)
+  wFrac: number;
+  hFrac: number;
+}
+
+/**
+ * Cloud Vision DOCUMENT_TEXT_DETECTION — 텍스트 + 단어별 바운딩 박스 반환.
+ * scale: extractHandwritingImage의 업스케일 배수 (기본 2)
+ * 좌표는 캔버스 CSS 픽셀 비율 (0~1) — 어떤 화면 크기에서도 올바르게 표시됨.
+ */
+export async function runCloudVisionOcrFull(
+  imageBase64: string,
+  apiKey: string,
+  scale = 2,
+): Promise<{ text: string; wordBoxes: VisionWordBox[] }> {
   const url = `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`;
   const body = {
     requests: [{
@@ -76,5 +98,30 @@ export async function runCloudVisionOcr(
   });
   if (!res.ok) throw new Error(`Cloud Vision HTTP ${res.status}`);
   const data = await res.json();
-  return (data.responses?.[0]?.fullTextAnnotation?.text ?? '').trim();
+  const text = (data.responses?.[0]?.fullTextAnnotation?.text ?? '').trim();
+
+  // textAnnotations[0] = 전체, [1..] = 단어별
+  const annotations: any[] = data.responses?.[0]?.textAnnotations ?? [];
+  // 이미지 실제 크기 = canvasCSS * scale (extractHandwritingImage 기준)
+  // 첫 annotation vertices로 이미지 크기 추정
+  const allV = annotations[0]?.boundingPoly?.vertices ?? [];
+  const imgW = allV.reduce((m: number, v: any) => Math.max(m, v.x ?? 0), 0) || 1;
+  const imgH = allV.reduce((m: number, v: any) => Math.max(m, v.y ?? 0), 0) || 1;
+
+  const wordBoxes: VisionWordBox[] = annotations.slice(1).map((a: any) => {
+    const verts: {x:number;y:number}[] = a.boundingPoly?.vertices ?? [];
+    const xs = verts.map((v:any) => v.x ?? 0);
+    const ys = verts.map((v:any) => v.y ?? 0);
+    // scale로 나눠서 CSS 픽셀 → 다시 이미지 크기(CSS 기준)로 정규화
+    const x0 = Math.min(...xs) / scale, y0 = Math.min(...ys) / scale;
+    const x1 = Math.max(...xs) / scale, y1 = Math.max(...ys) / scale;
+    const csW = imgW / scale, csH = imgH / scale;
+    return {
+      text: a.description ?? '',
+      xFrac: x0 / csW, yFrac: y0 / csH,
+      wFrac: (x1 - x0) / csW, hFrac: (y1 - y0) / csH,
+    };
+  }).filter((b: VisionWordBox) => b.text.trim());
+
+  return { text, wordBoxes };
 }

@@ -5,7 +5,7 @@ import {
   FileText, FolderOpen, Tag, Lock, Unlock, Settings, X, Plus,
   Undo2, Redo2, Search, Image as ImageIcon,
 } from 'lucide-react';
-import { PenNote, Folder, PenType, StrokePoint, SavedStroke, PenSettings } from '../types';
+import { PenNote, Folder, PenType, StrokePoint, SavedStroke, PenSettings, WordBox } from '../types';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 type Point = StrokePoint; // StrokePoint와 동일, 로컬 별칭
@@ -35,6 +35,7 @@ interface Props {
     pageImages?: (string|undefined)[],
     id?: string,
     pageOcrTexts?: string[],
+    pageWordBoxes?: WordBox[][],
   ) => void;
   onBack: () => void;
   initialSearchQuery?: string; // 검색어 → 해당 페이지로 이동
@@ -368,6 +369,7 @@ export const PenCanvas: React.FC<Props> = ({
     hlOpacity: 0.38, hlStraight: false,
     pages: [] as Page[],
     editingNoteId: undefined as string | undefined,
+    editingNote:   null as PenNote | null,
   });
   live.current.penOnlyMode        = penOnlyMode;
   live.current.penColor           = penColor;
@@ -386,6 +388,7 @@ export const PenCanvas: React.FC<Props> = ({
   live.current.hlStraight         = hlStraight;
   live.current.pages              = pages;          // 자동저장용
   live.current.editingNoteId      = editingNote?.id; // 자동저장용
+  live.current.editingNote        = editingNote;     // 오프라인 검색용
   pageImagesRef.current           = pageImages; // stale closure 방지용 ref 동기화
 
   // ── Background ─────────────────────────────────────────────────────────
@@ -1211,75 +1214,56 @@ export const PenCanvas: React.FC<Props> = ({
   };
 
   // ── 검색어 위치 찾기 (Gemini 바운딩박스) ────────────────────────────────────
-  const locateSearchTerm = useCallback(async (query: string) => {
-    const apiKey = localStorage.getItem('damoa_vision_api_key');
-    if (!apiKey) { setOcrMsg('🔍 검색 위치 탐색: Cloud Vision API 키 미설정'); return; }
+  const locateSearchTerm = useCallback((query: string) => {
     if (!query.trim()) return;
-    // getExportDataUrl은 ref 기반이므로 deps에서 제외해도 안전
-    const dataUrl = getExportDataUrl(); // eslint-disable-line react-hooks/exhaustive-deps
-    if (!dataUrl || dataUrl.length < 500) {
-      setOcrMsg('🔍 검색 위치 탐색: 캔버스 이미지 없음');
-      return;
-    }
-    setLocatingSearch(true);
-    try {
-      const compressed = await compress(dataUrl, 1600, 0.85);
-      const m = compressed.match(/^data:image\/\w+;base64,(.+)$/);
-      if (!m) { setOcrMsg('🔍 이미지 압축 실패'); return; }
+    const q = query.trim().toLowerCase();
+    const cvs = baseCanvasRef.current;
+    const W = cvs ? cvs.offsetWidth  : window.innerWidth;
+    const H = cvs ? cvs.offsetHeight : window.innerHeight;
 
-      const res = await fetch(
-        `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ requests: [{ image: { content: m[1] },
-            features: [{ type: 'DOCUMENT_TEXT_DETECTION' }] }] }) }
-      );
-      const json = await res.json();
-      if (json.error) { setOcrMsg(`🔍 Vision 오류: ${json.error.message ?? ''}`); setSearchHighlights([]); return; }
+    // ── 저장된 WordBox 우선 사용 (오프라인) ─────────────────────────────────
+    const storedBoxes = live.current.editingNote?.pageWordBoxes?.[live.current.pageIdx] ?? [];
+    if (storedBoxes.length > 0) {
+      const matched = storedBoxes.filter((b: WordBox) => b.text.toLowerCase().includes(q));
 
-      // textAnnotations: [0]=전체텍스트, [1..]=단어별
-      const annotations: any[] = json.responses?.[0]?.textAnnotations ?? [];
-      if (annotations.length === 0) { setOcrMsg(`🔍 "${query}" 위치 못 찾음`); setSearchHighlights([]); return; }
-
-      // 이미지 실제 픽셀 크기 (compress로 보낸 크기)
-      const cvs = baseCanvasRef.current;
-      const cssW = cvs ? Math.round(cvs.width / (window.devicePixelRatio || 1)) : window.innerWidth;
-      const cssH = cvs ? Math.round(cvs.height / (window.devicePixelRatio || 1)) : window.innerHeight;
-      // compress()는 최대 1600px로 축소 — 실제 이미지 크기를 첫 annotation의 vertices로 추정
-      const allVerts = annotations[0]?.boundingPoly?.vertices ?? [];
-      const imgW = allVerts.reduce((mx: number, v: any) => Math.max(mx, v.x ?? 0), 0) || cssW;
-      const imgH = allVerts.reduce((mx: number, v: any) => Math.max(mx, v.y ?? 0), 0) || cssH;
-      const scaleX = cssW / imgW;
-      const scaleY = cssH / imgH;
-
-      const q = query.trim().toLowerCase();
-      // 단어 단위 매칭: description이 검색어를 포함하는 모든 annotation 수집
-      const matched = annotations.slice(1).filter((a: any) =>
-        (a.description ?? '').toLowerCase().includes(q)
-      );
-      // 검색어가 여러 단어면 연속 단어들을 묶어서도 탐색
-      if (matched.length === 0) {
-        // 전체 텍스트에서 위치 찾기 (첫 번째 annotation은 전체)
-        setOcrMsg(`🔍 "${query}" 위치 못 찾음`);
-        setSearchHighlights([]); return;
+      // 검색어가 여러 단어인 경우 연속 단어 묶음도 시도
+      if (matched.length === 0 && q.includes(' ')) {
+        const words = q.split(/\s+/);
+        const results: WordBox[] = [];
+        for (let i = 0; i <= storedBoxes.length - words.length; i++) {
+          const chunk = storedBoxes.slice(i, i + words.length);
+          const chunkText = chunk.map((b: WordBox) => b.text.toLowerCase()).join(' ');
+          if (chunkText.includes(q)) {
+            const xs = chunk.map((b: WordBox) => b.x);
+            const ys = chunk.map((b: WordBox) => b.y);
+            const x2s = chunk.map((b: WordBox) => b.x + b.w);
+            const y2s = chunk.map((b: WordBox) => b.y + b.h);
+            results.push({
+              text: chunk.map((b: WordBox) => b.text).join(' '),
+              x: Math.min(...xs), y: Math.min(...ys),
+              w: Math.max(...x2s) - Math.min(...xs),
+              h: Math.max(...y2s) - Math.min(...ys),
+            });
+          }
+        }
+        if (results.length > 0) {
+          setSearchHighlights(results.map((b: WordBox) => ({ x: b.x*W, y: b.y*H, w: b.w*W, h: b.h*H })));
+          return;
+        }
       }
 
-      setSearchHighlights(matched.map((a: any) => {
-        const verts: {x:number;y:number}[] = a.boundingPoly?.vertices ?? [];
-        const xs = verts.map((v:any) => v.x ?? 0);
-        const ys = verts.map((v:any) => v.y ?? 0);
-        const x0 = Math.min(...xs) * scaleX;
-        const y0 = Math.min(...ys) * scaleY;
-        const x1 = Math.max(...xs) * scaleX;
-        const y1 = Math.max(...ys) * scaleY;
-        return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
-      }));
-      setOcrMsg(null);
-    } catch(e) {
-      setOcrMsg(`🔍 네트워크 오류: ${String(e).slice(0,60)}`);
+      if (matched.length > 0) {
+        setSearchHighlights(matched.map((b: WordBox) => ({ x: b.x*W, y: b.y*H, w: b.w*W, h: b.h*H })));
+        return;
+      }
+      setOcrMsg(`🔍 "${query}" 위치 못 찾음 (저장된 OCR 기준)`);
       setSearchHighlights([]);
-    } finally {
-      setLocatingSearch(false);
+      return;
     }
+
+    // ── 저장된 박스 없음 → Vision API로 실시간 탐색 (인터넷 필요) ───────────
+    setOcrMsg('🔍 저장된 위치 정보 없음. 노트를 다시 저장하면 오프라인으로 작동합니다.');
+    setSearchHighlights([]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1355,35 +1339,45 @@ export const PenCanvas: React.FC<Props> = ({
     // ── 전체 페이지 OCR (Cloud Vision) ──────────────────────────────────────
     const visionApiKey = localStorage.getItem('damoa_vision_api_key') ?? '';
     const pageOcrTexts: string[] = [];
+    const pageWordBoxes: WordBox[][] = [];
 
     if (visionApiKey) {
       setIsOcrLoading(true);
-      const { extractHandwritingImage, runCloudVisionOcr } = await import('../lib/inkOcr');
+      const { extractHandwritingImage, runCloudVisionOcrFull } = await import('../lib/inkOcr');
       const canvasW = containerRef.current?.clientWidth  || 1200;
       const canvasH = containerRef.current?.clientHeight || 1600;
+      const SCALE = 2;
 
       for (let pi = 0; pi < allPageStrokes.length; pi++) {
         const pgStrokes = allPageStrokes[pi];
         const existingText = editingNote?.pageOcrTexts?.[pi] ?? '';
+        const existingBoxes = editingNote?.pageWordBoxes?.[pi] ?? [];
         const shouldRecognize = pgStrokes.length > 0 && (pi === live.current.pageIdx || !existingText);
-        if (!shouldRecognize) { pageOcrTexts.push(existingText); continue; }
+        if (!shouldRecognize) {
+          pageOcrTexts.push(existingText);
+          pageWordBoxes.push(existingBoxes);
+          continue;
+        }
         try {
           setOcrMsg(`🌐 페이지 ${pi + 1}/${allPageStrokes.length} 인식 중...`);
-          const imgBase64 = extractHandwritingImage(pgStrokes as any, canvasW, canvasH);
-          const result = await runCloudVisionOcr(imgBase64, visionApiKey);
-          pageOcrTexts.push(result || existingText);
+          const imgBase64 = extractHandwritingImage(pgStrokes as any, canvasW, canvasH, SCALE);
+          const { text, wordBoxes: wb } = await runCloudVisionOcrFull(imgBase64, visionApiKey, SCALE);
+          pageOcrTexts.push(text || existingText);
+          pageWordBoxes.push(wb.map(b => ({ text: b.text, x: b.xFrac, y: b.yFrac, w: b.wFrac, h: b.hFrac })));
         } catch (e) {
           console.warn('[damoa-pen] Cloud Vision 실패:', e);
           pageOcrTexts.push(existingText);
+          pageWordBoxes.push(existingBoxes);
         }
       }
       setIsOcrLoading(false);
       const preview = pageOcrTexts.find(t => t?.trim())?.slice(0, 60) ?? '';
       setOcrMsg(preview ? `✅ 인식 완료: "${preview}${preview.length >= 60 ? '...' : ''}"` : null);
     } else {
-      // API 키 없으면 기존 텍스트 유지
+      // API 키 없으면 기존 텍스트/박스 유지
       for (let pi = 0; pi < allPageStrokes.length; pi++) {
         pageOcrTexts.push(editingNote?.pageOcrTexts?.[pi] ?? '');
+        pageWordBoxes.push(editingNote?.pageWordBoxes?.[pi] ?? []);
       }
     }
 
@@ -1411,6 +1405,7 @@ export const PenCanvas: React.FC<Props> = ({
       currentPageImages.some(Boolean) ? currentPageImages : undefined,
       editingNote?.id,
       pageOcrTexts.some(Boolean) ? pageOcrTexts : undefined,
+      pageWordBoxes.some(b => b.length > 0) ? pageWordBoxes : undefined,
     );
   };
 

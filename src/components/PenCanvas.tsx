@@ -1247,13 +1247,15 @@ export const PenCanvas: React.FC<Props> = ({
           }
         }
         if (results.length > 0) {
-          setSearchHighlights(results.map((b: WordBox) => ({ x: b.x*W, y: b.y*H, w: b.w*W, h: b.h*H })));
+          const PAD = 5;
+          setSearchHighlights(results.map((b: WordBox) => ({ x: b.x*W - PAD, y: b.y*H - PAD, w: b.w*W + PAD*2, h: b.h*H + PAD*2 })));
           return;
         }
       }
 
       if (matched.length > 0) {
-        setSearchHighlights(matched.map((b: WordBox) => ({ x: b.x*W, y: b.y*H, w: b.w*W, h: b.h*H })));
+        const PAD = 5; // Vision API 허용 오차 보정 여백 (px)
+        setSearchHighlights(matched.map((b: WordBox) => ({ x: b.x*W - PAD, y: b.y*H - PAD, w: b.w*W + PAD*2, h: b.h*H + PAD*2 })));
         return;
       }
       setOcrMsg(`🔍 "${query}" 위치 못 찾음 (저장된 OCR 기준)`);

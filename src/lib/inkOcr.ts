@@ -100,27 +100,51 @@ export async function runCloudVisionOcrFull(
   });
   if (!res.ok) throw new Error(`Cloud Vision HTTP ${res.status}`);
   const data = await res.json();
-  const text = (data.responses?.[0]?.fullTextAnnotation?.text ?? '').trim();
+  const fullText = data.responses?.[0]?.fullTextAnnotation;
+  const text = (fullText?.text ?? '').trim();
 
-  // textAnnotations[0] = 전체, [1..] = 단어별
-  const annotations: any[] = data.responses?.[0]?.textAnnotations ?? [];
   // 이미지 실제 픽셀 크기 = canvasW*scale x canvasH*scale (extractHandwritingImage 기준)
-  // 이 값으로 나눠 0~1 정규화 → 화면 크기에 무관하게 정확한 위치 복원 가능
   const physW = canvasW * scale;
   const physH = canvasH * scale;
 
-  const wordBoxes: VisionWordBox[] = annotations.slice(1).map((a: any) => {
-    const verts: {x:number;y:number}[] = a.boundingPoly?.vertices ?? [];
-    const xs = verts.map((v:any) => v.x ?? 0);
-    const ys = verts.map((v:any) => v.y ?? 0);
-    const x0 = Math.min(...xs), y0 = Math.min(...ys);
-    const x1 = Math.max(...xs), y1 = Math.max(...ys);
-    return {
-      text: a.description ?? '',
-      xFrac: x0 / physW, yFrac: y0 / physH,
-      wFrac: (x1 - x0) / physW, hFrac: (y1 - y0) / physH,
-    };
-  }).filter((b: VisionWordBox) => b.text.trim());
+  // fullTextAnnotation.pages → blocks → paragraphs → words 구조 사용
+  // textAnnotations[1..] 보다 단어 경계가 더 정확함
+  const wordBoxes: VisionWordBox[] = [];
+  for (const page of fullText?.pages ?? []) {
+    for (const block of page.blocks ?? []) {
+      for (const para of block.paragraphs ?? []) {
+        for (const word of para.words ?? []) {
+          const wordText: string = (word.symbols ?? []).map((s: any) => s.text ?? '').join('');
+          if (!wordText.trim()) continue;
+          const verts: {x:number;y:number}[] = word.boundingBox?.vertices ?? [];
+          if (!verts.length) continue;
+          const xs = verts.map((v: any) => v.x ?? 0);
+          const ys = verts.map((v: any) => v.y ?? 0);
+          const x0 = Math.min(...xs), y0 = Math.min(...ys);
+          const x1 = Math.max(...xs), y1 = Math.max(...ys);
+          wordBoxes.push({
+            text: wordText,
+            xFrac: x0 / physW, yFrac: y0 / physH,
+            wFrac: (x1 - x0) / physW, hFrac: (y1 - y0) / physH,
+          });
+        }
+      }
+    }
+  }
+
+  // fallback: fullTextAnnotation 없으면 textAnnotations[1..] 사용
+  if (wordBoxes.length === 0) {
+    const annotations: any[] = data.responses?.[0]?.textAnnotations ?? [];
+    for (const a of annotations.slice(1)) {
+      const verts: {x:number;y:number}[] = a.boundingPoly?.vertices ?? [];
+      const xs = verts.map((v: any) => v.x ?? 0);
+      const ys = verts.map((v: any) => v.y ?? 0);
+      const x0 = Math.min(...xs), y0 = Math.min(...ys);
+      const x1 = Math.max(...xs), y1 = Math.max(...ys);
+      const t = a.description ?? '';
+      if (t.trim()) wordBoxes.push({ text: t, xFrac: x0/physW, yFrac: y0/physH, wFrac: (x1-x0)/physW, hFrac: (y1-y0)/physH });
+    }
+  }
 
   return { text, wordBoxes };
 }

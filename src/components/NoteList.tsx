@@ -162,36 +162,47 @@ export const NoteList: React.FC<Props> = ({
               <p className="text-[11px] font-bold text-stone-400 dark:text-slate-500 mt-0.5">손글씨 전용 노트</p>
             </div>
           </div>
-          <div className="flex items-center gap-1.5">
-            {/* 뷰 모드 토글 */}
-            <div className="flex items-center gap-0.5 bg-stone-100 dark:bg-slate-800 rounded-xl p-0.5">
+          <div className="flex items-center gap-1 overflow-x-auto shrink-0" style={{scrollbarWidth:'none'}}>
+            {/* 뷰 모드 토글 — 모바일에서는 현재 모드만 표시, 탭 클릭시 순환 */}
+            <div className="flex items-center gap-0.5 bg-stone-100 dark:bg-slate-800 rounded-xl p-0.5 shrink-0">
+              {/* 모바일(<480px): 현재 뷰만 보이도록 숨기기 */}
               {VIEW_MODES.map(({ mode, icon, label }) => (
                 <button key={mode} type="button" title={label}
                   onClick={() => { setViewMode(mode); localStorage.setItem('damoa_view_mode', mode); }}
-                  className={`w-8 h-8 flex items-center justify-center rounded-lg cursor-pointer transition-all ${viewMode===mode?'bg-white dark:bg-slate-700 shadow-sm text-purple-600':'text-stone-500 dark:text-slate-400 hover:text-stone-700'}`}>
+                  className={`w-7 h-7 flex items-center justify-center rounded-lg cursor-pointer transition-all ${viewMode===mode?'bg-white dark:bg-slate-700 shadow-sm text-purple-600':'text-stone-500 dark:text-slate-400 hover:text-stone-700 hidden xs:flex'}`}>
                   {icon}
                 </button>
               ))}
+              {/* 모바일에서 현재 뷰 아이콘 (xs 미만) */}
+              <button type="button" title="뷰 전환"
+                onClick={() => {
+                  const cur = VIEW_MODES.findIndex(m => m.mode === viewMode);
+                  const next = VIEW_MODES[(cur + 1) % VIEW_MODES.length];
+                  setViewMode(next.mode); localStorage.setItem('damoa_view_mode', next.mode);
+                }}
+                className="w-7 h-7 flex xs:hidden items-center justify-center rounded-lg bg-white dark:bg-slate-700 shadow-sm text-purple-600 cursor-pointer">
+                {VIEW_MODES.find(m => m.mode === viewMode)?.icon}
+              </button>
             </div>
             {/* Folder */}
             {onOpenFolderPanel && (
               <button type="button" onClick={onOpenFolderPanel}
-                className="w-9 h-9 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 cursor-pointer">
+                className="w-8 h-8 shrink-0 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 cursor-pointer">
                 <FolderOpen className="w-4 h-4 text-purple-600"/>
               </button>
             )}
             {/* Sort */}
-            <div className="relative">
+            <div className="relative shrink-0">
               <button type="button" onClick={() => setShowSort(!showSort)}
-                className="w-9 h-9 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 cursor-pointer">
+                className="w-8 h-8 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 cursor-pointer">
                 <SortAsc className="w-4 h-4 text-stone-600 dark:text-slate-400"/>
               </button>
               {showSort && (
-                <div className="absolute right-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl shadow-xl z-20 overflow-hidden min-w-[140px]"
+                <div className="absolute right-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl shadow-xl z-20 overflow-hidden min-w-[130px]"
                   onPointerLeave={() => setShowSort(false)}>
                   {([['updatedAt','최근 수정'],['createdAt','최근 생성'],['title','이름순']] as const).map(([m, label]) => (
                     <button key={m} type="button" onClick={() => {setSortMode(m);setShowSort(false);}}
-                      className={`w-full px-4 py-2.5 text-xs font-black text-left cursor-pointer ${sortMode===m?'bg-purple-600 text-white':'text-stone-800 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-800'}`}>
+                      className={`w-full px-3 py-2 text-xs font-black text-left cursor-pointer ${sortMode===m?'bg-purple-600 text-white':'text-stone-800 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-800'}`}>
                       {label}
                     </button>
                   ))}
@@ -200,12 +211,12 @@ export const NoteList: React.FC<Props> = ({
             </div>
             {/* 백업 내보내기 */}
             <button type="button" onClick={handleBackupExport} title="백업 내보내기"
-              className="w-9 h-9 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 cursor-pointer">
+              className="w-8 h-8 shrink-0 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 cursor-pointer">
               <Download className="w-4 h-4 text-emerald-600 dark:text-emerald-400"/>
             </button>
             {/* Settings */}
             <button type="button" onClick={onSettings}
-              className="w-9 h-9 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 cursor-pointer">
+              className="w-8 h-8 shrink-0 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 cursor-pointer">
               <Settings className="w-4 h-4 text-stone-600 dark:text-slate-400"/>
             </button>
           </div>

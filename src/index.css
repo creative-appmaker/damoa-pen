@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+@theme {
+  --breakpoint-xs: 480px;
+}
+
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;

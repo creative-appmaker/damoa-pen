@@ -191,6 +191,10 @@ function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
       const p1 = pts[i-1], p2 = pts[i];
       const avgP = (p1.pressure + p2.pressure) / 2;
       applyPenStyle(ctx, stroke, avgP);
+      // 세그먼트 연결부 gap 방지: 각 포인트에 채움 원 추가
+      ctx.beginPath();
+      ctx.arc(p1.x, p1.y, Math.max(0.2, ctx.lineWidth / 2), 0, Math.PI * 2);
+      ctx.fill();
       ctx.beginPath();
       if (i === 1 || i === pts.length - 1) {
         ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y);
@@ -207,6 +211,7 @@ function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
 
   if (stroke.penType === 'penFountain') {
     // 볼펜+만년필: 세그먼트별 tapering + 미세 필압
+    // fountainIntensity: 0=없음, 0.5=약, 1.0=중, 2.0=강 (획끝 강도 슬라이더)
     const n = pts.length;
     if (n === 1) {
       ctx.globalAlpha = 1; ctx.fillStyle = stroke.color;
@@ -214,13 +219,18 @@ function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
       ctx.arc(pts[0].x, pts[0].y, Math.max(0.2, stroke.size / 2), 0, Math.PI * 2);
       ctx.fill(); resetCtxState(ctx); return;
     }
-    // taper 구간: 전체 포인트의 20%, 최소 2 최대 12
-    const taperLen = Math.max(2, Math.min(12, Math.floor(n * 0.2)));
+    const fi = stroke.fountainIntensity ?? 0.5;
+    // taperLen: fi=0→없음, fi=0.5→5%, fi=1.0→8%, fi=2.0→14%
+    const taperLen = fi <= 0 ? 0 : Math.max(2, Math.min(20, Math.floor(n * 0.07 * fi)));
+    // minTaper: 획끝이 최소 이 비율까지만 가늘어짐 (fi=0→1.0, fi=0.5→0.85, fi=1→0.72, fi=2→0.55)
+    const minTaper = fi <= 0 ? 1.0 : Math.max(0.4, 1.0 - fi * 0.225);
+
     for (let i = 0; i < n - 1; i++) {
       const p1 = pts[i], p2 = pts[i + 1];
-      // 획 끝 tapering: 시작/끝 구간에서 가늘어짐 (sqrt로 자연스럽게)
+      // tapering
       const distFromEdge = Math.min(i + 1, n - 1 - i);
-      const taperFactor = Math.sqrt(Math.min(distFromEdge, taperLen) / taperLen);
+      const rawTaper = taperLen > 0 ? Math.min(distFromEdge / taperLen, 1) : 1;
+      const taperFactor = minTaper + (1 - minTaper) * Math.sqrt(rawTaper);
       // 미세 필압 (볼펜 기반 ±18%)
       const avgP = (p1.pressure + p2.pressure) / 2;
       const pressureFactor = 0.82 + Math.max(0.2, Math.min(avgP, 1)) * 0.18;
@@ -231,6 +241,10 @@ function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
       ctx.lineWidth = width;
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       ctx.globalCompositeOperation = 'source-over';
+      // gap 방지: 각 시작점에 채움 원
+      ctx.beginPath();
+      ctx.arc(p1.x, p1.y, Math.max(0.2, width / 2), 0, Math.PI * 2);
+      ctx.fill();
       ctx.beginPath();
       ctx.moveTo(p1.x, p1.y);
       ctx.lineTo(p2.x, p2.y);
@@ -1785,11 +1799,31 @@ export const PenCanvas: React.FC<Props> = ({
               <div ref={penMenuRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-1.5 shadow-xl z-50 min-w-[160px] flex flex-col gap-1">
                 {(['pen','penFountain','fountain','highlighter'] as PenType[]).map(pt => (
                   <button key={pt} type="button"
-                    onClick={() => { setPenType(pt); setIsEraser(false); setShowPenMenu(false); }}
+                    onClick={() => {
+                      setPenType(pt);
+                      // penFountain으로 전환 시 기본 강도 '약'(0.5) 설정
+                      if (pt === 'penFountain' && fountainIntensity > 2.0) setFountainIntensity(0.5);
+                      setIsEraser(false); setShowPenMenu(false);
+                    }}
                     className={`px-3 py-2 rounded-xl text-xs font-black text-left flex items-center gap-2 cursor-pointer ${penType===pt&&!isEraser?'bg-purple-600 text-white':'text-stone-800 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-800'}`}>
                     <span>{PEN_ICONS[pt]}</span><span>{PEN_LABELS[pt]}</span>
                   </button>
                 ))}
+                {/* 볼펜+만년필 획끝 강도 */}
+                {penType === 'penFountain' && (
+                  <div className="px-3 py-2 border-t border-stone-100 dark:border-slate-700 mt-1">
+                    <div className="text-[10px] font-black text-stone-500 mb-1.5">획끝 강도</div>
+                    <div className="flex gap-1">
+                      {([{label:'없음',val:0},{label:'약',val:0.5},{label:'중',val:1.0},{label:'강',val:2.0}] as {label:string;val:number}[]).map(({label,val}) => (
+                        <button key={label} type="button"
+                          onClick={() => setFountainIntensity(val)}
+                          className={`flex-1 py-1 rounded-lg text-[10px] font-black cursor-pointer ${Math.abs(fountainIntensity-val)<0.01?'bg-purple-600 text-white':'bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-slate-300'}`}>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {/* Fountain pen intensity */}
                 {penType === 'fountain' && (
                   <div className="px-3 py-2 border-t border-stone-100 dark:border-slate-700 mt-1">

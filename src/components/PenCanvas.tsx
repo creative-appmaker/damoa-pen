@@ -3,7 +3,7 @@ import {
   Eraser, Trash2, Check, Sparkles,
   Hand, ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
   FileText, FolderOpen, Tag, Lock, Unlock, Settings, X, Plus,
-  Undo2, Redo2, Search, Image as ImageIcon, Heart, Layers,
+  Undo2, Redo2, Search, Image as ImageIcon, Heart, Layers, Eye, EyeOff,
 } from 'lucide-react';
 import { PenNote, Folder, PenType, StrokePoint, SavedStroke, PenSettings, WordBox, PenLayer } from '../types';
 
@@ -420,9 +420,10 @@ export const PenCanvas: React.FC<Props> = ({
   // ── PDF 레이어 (PDF 노트 전용) ────────────────────────────────────────────
   // pages 상태 = 현재 활성 레이어 스트로크
   // otherLayers = 비활성 레이어 데이터
-  const [otherLayers,     setOtherLayers]     = useState<Array<{id:string;name:string;pageStrokes:Stroke[][]}>>([]);
+  const [otherLayers,     setOtherLayers]     = useState<Array<{id:string;name:string;pageStrokes:Stroke[][];hidden?:boolean}>>([]);
   const [activeLayerId,   setActiveLayerId]   = useState('layer-default');
   const [activeLayerName, setActiveLayerName] = useState('기본');
+  const [activeLayerHidden, setActiveLayerHidden] = useState(false);
   const [showLayerPanel,  setShowLayerPanel]  = useState(false);
 
   // ── 형광펜 설정 ───────────────────────────────────────────────────────────
@@ -439,9 +440,10 @@ export const PenCanvas: React.FC<Props> = ({
   const paperMenuRef   = useRef<HTMLDivElement | null>(null);
   const hlMenuRef      = useRef<HTMLDivElement | null>(null);
   const favMenuRef     = useRef<HTMLDivElement | null>(null);
-  const otherLayersRef    = useRef<Array<{id:string;name:string;pageStrokes:Stroke[][]}>>([]);
-  const activeLayerIdRef   = useRef('layer-default');
-  const activeLayerNameRef = useRef('기본');
+  const otherLayersRef      = useRef<Array<{id:string;name:string;pageStrokes:Stroke[][];hidden?:boolean}>>([]);
+  const activeLayerIdRef    = useRef('layer-default');
+  const activeLayerNameRef  = useRef('기본');
+  const activeLayerHiddenRef = useRef(false);
 
   const live = useRef({
     penOnlyMode: true,
@@ -479,6 +481,7 @@ export const PenCanvas: React.FC<Props> = ({
   otherLayersRef.current          = otherLayers;
   activeLayerIdRef.current        = activeLayerId;
   activeLayerNameRef.current      = activeLayerName;
+  activeLayerHiddenRef.current    = activeLayerHidden;
 
   // ── Background ─────────────────────────────────────────────────────────
   const drawBackground = useCallback((ctx: CanvasRenderingContext2D, cssW: number, cssH: number) => {
@@ -525,11 +528,14 @@ export const PenCanvas: React.FC<Props> = ({
     // 비활성 레이어 스트로크 먼저 렌더 (활성 레이어 아래에 표시)
     const curPgIdx = live.current.pageIdx;
     for (const layer of otherLayersRef.current) {
+      if (layer.hidden) continue; // 숨긴 레이어 스킵
       const ls = layer.pageStrokes[curPgIdx] ?? [];
       ls.forEach(s => drawStroke(s, ctx));
     }
-    // 활성 레이어 스트로크
-    strokesRef.current.forEach(s => drawStroke(s, ctx));
+    // 활성 레이어 스트로크 (숨기지 않은 경우만)
+    if (!activeLayerHiddenRef.current) {
+      strokesRef.current.forEach(s => drawStroke(s, ctx));
+    }
   }, [drawBackground]);
 
   const clearActive = useCallback(() => {
@@ -1910,7 +1916,7 @@ export const PenCanvas: React.FC<Props> = ({
 
           {/* ── 줌 잠금 (Row 1 — 항상 노출) ── */}
           {(zoomEnabled || zoomLocked) && (
-            <button type="button" title={zoomLocked ? '줌 잠금 해제' : '현재 배율 고정'}
+            <button type="button" title={zoomLocked ? `배율 고정 ${Math.round(canvasXform.scale*100)}% — 탭해서 해제` : '현재 배율 고정'}
               onClick={() => {
                 if (zoomLocked) {
                   setZoomLocked(false);
@@ -1919,8 +1925,9 @@ export const PenCanvas: React.FC<Props> = ({
                   cachedRectRef.current = null;
                 } else { setZoomLocked(true); }
               }}
-              className={`px-2 py-1.5 rounded-xl flex items-center cursor-pointer shrink-0 border ${zoomLocked?'bg-amber-500/25 border-amber-400/50 text-amber-300':'bg-white/10 border-white/15 text-white/50'}`}>
+              className={`px-2 py-1.5 rounded-xl flex items-center gap-1 cursor-pointer shrink-0 border ${zoomLocked?'bg-amber-500/25 border-amber-400/50 text-amber-300':'bg-white/10 border-white/15 text-white/50'}`}>
               {zoomLocked ? <Lock className="w-3.5 h-3.5"/> : <Unlock className="w-3.5 h-3.5"/>}
+              {zoomLocked && <span className="text-[10px] font-black">{Math.round(canvasXform.scale*100)}%</span>}
             </button>
           )}
 
@@ -2288,12 +2295,17 @@ export const PenCanvas: React.FC<Props> = ({
           {/* ── 핀치 줌 ── */}
           <button type="button" title={zoomEnabled ? `줌 ${Math.round(canvasXform.scale*100)}%` : '줌'}
             onClick={() => {
-              if (zoomEnabled && !zoomLocked) {
-                // 잠금 아닐 때만 리셋
-                const id = { scale: 1, x: 0, y: 0 };
-                canvasXformRef.current = id;
-                setCanvasXform(id);
-                cachedRectRef.current = null;
+              if (zoomEnabled) {
+                if (!zoomLocked && canvasXformRef.current.scale > 1.05) {
+                  // 줌 상태로 종료 → 자동 잠금 (고정 유지)
+                  setZoomLocked(true);
+                } else if (!zoomLocked) {
+                  // scale ≈ 1이면 리셋
+                  const id = { scale: 1, x: 0, y: 0 };
+                  canvasXformRef.current = id;
+                  setCanvasXform(id);
+                  cachedRectRef.current = null;
+                }
               }
               setZoomEnabled(z => !z);
             }}
@@ -2387,31 +2399,6 @@ export const PenCanvas: React.FC<Props> = ({
           )}
         </div>
 
-        {/* ── PDF 레이어 바 (PDF 노트 전용) ── */}
-        {pdfBase64 && (
-          <div className="mt-1 border-t border-white/10 pt-1.5 flex items-center gap-1 overflow-x-auto">
-            <Layers className="w-3.5 h-3.5 text-white/40 shrink-0"/>
-            {/* 활성 레이어 */}
-            <button type="button"
-              onClick={() => renameActiveLayer()}
-              className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-purple-600 text-white shrink-0 cursor-pointer">
-              {activeLayerName}
-            </button>
-            {/* 비활성 레이어 */}
-            {otherLayers.map(l => (
-              <button key={l.id} type="button"
-                onClick={() => switchLayer(l.id)}
-                className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-white/10 text-white/70 hover:bg-white/20 shrink-0 cursor-pointer">
-                {l.name}
-              </button>
-            ))}
-            {/* 새 레이어 추가 */}
-            <button type="button" onClick={addLayer}
-              className="w-6 h-6 rounded-full bg-white/10 hover:bg-white/20 text-white/60 flex items-center justify-center shrink-0 cursor-pointer">
-              <Plus className="w-3 h-3"/>
-            </button>
-          </div>
-        )}
 
         {/* Row 2.5: 종이 설정 패널 */}
         {showSettingsPanel && (
@@ -2553,6 +2540,65 @@ export const PenCanvas: React.FC<Props> = ({
           )}
         </div>
         </div>{/* /페이지 전환 슬라이드 wrapper */}
+
+        {/* ── PDF 레이어 사이드 패널 ── */}
+        {pdfBase64 && (
+          <div className="absolute right-0 top-1/2 -translate-y-1/2 z-30 flex flex-row items-start"
+            style={{pointerEvents:'none'}}>
+            {/* 패널 내용 (왼쪽으로 열림) */}
+            {showLayerPanel && (
+              <div className="bg-stone-900/95 border border-white/15 rounded-l-2xl shadow-2xl p-2 flex flex-col gap-1 min-w-[130px]"
+                style={{pointerEvents:'auto', backdropFilter:'blur(8px)', touchAction:'auto'}}
+                onClick={e => e.stopPropagation()}
+                onPointerDown={e => e.stopPropagation()}>
+                <div className="text-[9px] font-black text-white/40 uppercase tracking-wider px-1 mb-0.5">레이어</div>
+                {/* 활성 레이어 */}
+                <div className="flex items-center gap-1">
+                  <button type="button" onClick={() => { setActiveLayerHidden(v => { const nv=!v; redrawBase(); return nv; }) }}
+                    className="text-white/50 hover:text-white cursor-pointer shrink-0">
+                    {activeLayerHidden ? <EyeOff className="w-3.5 h-3.5"/> : <Eye className="w-3.5 h-3.5 text-purple-400"/>}
+                  </button>
+                  <button type="button" onClick={() => renameActiveLayer()}
+                    className={`flex-1 text-left px-2 py-0.5 rounded-lg text-[11px] font-black cursor-pointer ${activeLayerHidden?'bg-white/5 text-white/30':'bg-purple-600 text-white'}`}>
+                    {activeLayerName}
+                  </button>
+                </div>
+                {/* 비활성 레이어 */}
+                {otherLayers.map(l => (
+                  <div key={l.id} className="flex items-center gap-1">
+                    <button type="button"
+                      onClick={() => {
+                        const updated = otherLayersRef.current.map(ol => ol.id===l.id ? {...ol,hidden:!ol.hidden} : ol);
+                        setOtherLayers(updated);
+                        otherLayersRef.current = updated;
+                        redrawBase();
+                      }}
+                      className="text-white/50 hover:text-white cursor-pointer shrink-0">
+                      {l.hidden ? <EyeOff className="w-3.5 h-3.5"/> : <Eye className="w-3.5 h-3.5 text-white/70"/>}
+                    </button>
+                    <button type="button" onClick={() => switchLayer(l.id)}
+                      className={`flex-1 text-left px-2 py-0.5 rounded-lg text-[11px] font-black cursor-pointer ${l.hidden?'bg-white/5 text-white/30':'bg-white/10 text-white/80 hover:bg-white/20'}`}>
+                      {l.name}
+                    </button>
+                  </div>
+                ))}
+                {/* 새 레이어 */}
+                <button type="button" onClick={addLayer}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-black text-white/40 hover:text-white/80 hover:bg-white/10 cursor-pointer mt-0.5">
+                  <Plus className="w-3 h-3"/><span>추가</span>
+                </button>
+              </div>
+            )}
+            {/* 토글 탭 */}
+            <button type="button"
+              onClick={() => setShowLayerPanel(v => !v)}
+              style={{pointerEvents:'auto', touchAction:'auto'}}
+              className={`flex flex-col items-center gap-0.5 px-1.5 py-2.5 rounded-l-xl shadow-lg cursor-pointer ${showLayerPanel?'bg-purple-600 text-white':'bg-stone-800/90 text-white/50 hover:text-white/90'}`}>
+              <Layers className="w-3.5 h-3.5"/>
+              <span className="text-[8px] font-black" style={{writingMode:'vertical-rl',textOrientation:'mixed'}}>레이어</span>
+            </button>
+          </div>
+        )}
 
         {/* ── 스와이프 새 페이지 힌트 ── */}
         {/* OCR 메시지 — 절대 위치 오버레이 (레이아웃 영향 없음) */}

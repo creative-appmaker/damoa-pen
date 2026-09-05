@@ -191,19 +191,13 @@ function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
       const p1 = pts[i-1], p2 = pts[i];
       const avgP = (p1.pressure + p2.pressure) / 2;
       applyPenStyle(ctx, stroke, avgP);
-      // 세그먼트 연결부 gap 방지: 각 포인트에 채움 원 추가
+      // 선분 방식: 베지어 대신 lineTo + 채움 원으로 gap 원천 차단
       ctx.beginPath();
       ctx.arc(p1.x, p1.y, Math.max(0.2, ctx.lineWidth / 2), 0, Math.PI * 2);
       ctx.fill();
       ctx.beginPath();
-      if (i === 1 || i === pts.length - 1) {
-        ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y);
-      } else {
-        const p0 = pts[i-2];
-        const mx1 = (p0.x + p1.x) / 2, my1 = (p0.y + p1.y) / 2;
-        const mx2 = (p1.x + p2.x) / 2, my2 = (p1.y + p2.y) / 2;
-        ctx.moveTo(mx1, my1); ctx.quadraticCurveTo(p1.x, p1.y, mx2, my2);
-      }
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
       ctx.stroke();
     }
     resetCtxState(ctx); return;

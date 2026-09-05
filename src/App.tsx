@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { FolderOpen, FolderPlus, X, ChevronRight, Tag } from 'lucide-react';
-import { PenNote, Folder, PenSettings } from './types';
+import { PenNote, Folder, PenSettings, PenLayer } from './types';
 import { getAllNotes, saveNote, deleteNote, getFolders, saveFolder, deleteFolder } from './lib/storage';
 import { PenCanvas } from './components/PenCanvas';
 import { NoteList } from './components/NoteList';
@@ -150,6 +150,8 @@ export default function App() {
     pageOcrTexts?: string[],
     pageWordBoxes?: import('./types').WordBox[][],
     ocrCanvasDims?: { w: number; h: number },
+    penLayers?: PenLayer[],
+    activeLayerId?: string,
   ) => {
     const now = Date.now();
     const noteId = id || `note-${now}-${Math.random().toString(36).slice(2)}`;
@@ -173,6 +175,8 @@ export default function App() {
       pageOcrTexts:  pageOcrTexts  ?? editingNote?.pageOcrTexts,
       pageWordBoxes: pageWordBoxes ?? editingNote?.pageWordBoxes,
       ocrCanvasDims: ocrCanvasDims ?? editingNote?.ocrCanvasDims,
+      penLayers:     penLayers     ?? editingNote?.penLayers,
+      activeLayerId: activeLayerId ?? editingNote?.activeLayerId,
     };
     await saveNote(note);
     await loadNotes();

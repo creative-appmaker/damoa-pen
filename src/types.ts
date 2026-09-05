@@ -44,6 +44,8 @@ export interface PenNote {
   pageOcrTexts?: string[];               // 페이지별 OCR 텍스트 (검색 → 페이지 이동용)
   pageWordBoxes?: WordBox[][];           // 페이지별 단어 바운딩 박스 (오프라인 검색 하이라이트용)
   ocrCanvasDims?: { w: number; h: number }; // OCR 당시 캔버스 CSS 픽셀 크기 (좌표 정확도용)
+  penLayers?: PenLayer[];    // PDF 노트 전용 레이어 목록
+  activeLayerId?: string;    // 현재 활성 레이어 ID
 }
 
 /** 단어 바운딩 박스 — 좌표는 캔버스 CSS 픽셀 비율 (0.0~1.0) */
@@ -53,6 +55,14 @@ export interface WordBox {
   y: number; // 위쪽 (캔버스 height 비율)
   w: number; // 너비 (캔버스 width 비율)
   h: number; // 높이 (캔버스 height 비율)
+}
+
+// ── 펜 레이어 (PDF 노트 전용) ─────────────────────────────────────────────────
+
+export interface PenLayer {
+  id: string;
+  name: string;
+  pageStrokes: SavedStroke[][];
 }
 
 // ── 펜 설정 ───────────────────────────────────────────────────────────────────

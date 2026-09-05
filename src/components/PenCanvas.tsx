@@ -3,9 +3,9 @@ import {
   Eraser, Trash2, Check, Sparkles,
   Hand, ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
   FileText, FolderOpen, Tag, Lock, Unlock, Settings, X, Plus,
-  Undo2, Redo2, Search, Image as ImageIcon,
+  Undo2, Redo2, Search, Image as ImageIcon, Heart, Layers,
 } from 'lucide-react';
-import { PenNote, Folder, PenType, StrokePoint, SavedStroke, PenSettings, WordBox } from '../types';
+import { PenNote, Folder, PenType, StrokePoint, SavedStroke, PenSettings, WordBox, PenLayer } from '../types';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 type Point = StrokePoint; // StrokePoint와 동일, 로컬 별칭
@@ -37,6 +37,8 @@ interface Props {
     pageOcrTexts?: string[],
     pageWordBoxes?: WordBox[][],
     ocrCanvasDims?: { w: number; h: number },
+    penLayers?: PenLayer[],
+    activeLayerId?: string,
   ) => void;
   onBack: () => void;
   initialSearchQuery?: string; // 검색어 → 해당 페이지로 이동
@@ -398,6 +400,20 @@ export const PenCanvas: React.FC<Props> = ({
   const [zoomLocked,       setZoomLocked]       = useState(false);
   const [showSettingsPanel,setShowSettingsPanel] = useState(false);
 
+  // ── 즐겨찾기 펜 ──────────────────────────────────────────────────────────
+  const [showFavMenu, setShowFavMenu] = useState(false);
+  const [favPens, setFavPens] = useState<Array<{id:string;name:string;penType:PenType;penSize:number;penColor:string;fountainIntensity:number}>>(() => {
+    try { return JSON.parse(localStorage.getItem('damoa_fav_pens') ?? '[]'); } catch { return []; }
+  });
+
+  // ── PDF 레이어 (PDF 노트 전용) ────────────────────────────────────────────
+  // pages 상태 = 현재 활성 레이어 스트로크
+  // otherLayers = 비활성 레이어 데이터
+  const [otherLayers,     setOtherLayers]     = useState<Array<{id:string;name:string;pageStrokes:Stroke[][]}>>([]);
+  const [activeLayerId,   setActiveLayerId]   = useState('layer-default');
+  const [activeLayerName, setActiveLayerName] = useState('기본');
+  const [showLayerPanel,  setShowLayerPanel]  = useState(false);
+
   // ── 형광펜 설정 ───────────────────────────────────────────────────────────
   const [showHlMenu,       setShowHlMenu]       = useState(false);
   const [hlOpacity,        setHlOpacity]        = useState(0.38);
@@ -411,6 +427,10 @@ export const PenCanvas: React.FC<Props> = ({
   const eraserMenuRef  = useRef<HTMLDivElement | null>(null);
   const paperMenuRef   = useRef<HTMLDivElement | null>(null);
   const hlMenuRef      = useRef<HTMLDivElement | null>(null);
+  const favMenuRef     = useRef<HTMLDivElement | null>(null);
+  const otherLayersRef    = useRef<Array<{id:string;name:string;pageStrokes:Stroke[][]}>>([]);
+  const activeLayerIdRef   = useRef('layer-default');
+  const activeLayerNameRef = useRef('기본');
 
   const live = useRef({
     penOnlyMode: true,
@@ -444,6 +464,9 @@ export const PenCanvas: React.FC<Props> = ({
   live.current.editingNoteId      = editingNote?.id; // 자동저장용
   live.current.editingNote        = editingNote;     // 오프라인 검색용
   pageImagesRef.current           = pageImages; // stale closure 방지용 ref 동기화
+  otherLayersRef.current          = otherLayers;
+  activeLayerIdRef.current        = activeLayerId;
+  activeLayerNameRef.current      = activeLayerName;
 
   // ── Background ─────────────────────────────────────────────────────────
   const drawBackground = useCallback((ctx: CanvasRenderingContext2D, cssW: number, cssH: number) => {
@@ -487,6 +510,13 @@ export const PenCanvas: React.FC<Props> = ({
       ctx.drawImage(pi, px, 0, pw, ph); // 상단 정렬
     }
     if (baseImageRef.current) ctx.drawImage(baseImageRef.current, 0, 0, cssW, cssH);
+    // 비활성 레이어 스트로크 먼저 렌더 (활성 레이어 아래에 표시)
+    const curPgIdx = live.current.pageIdx;
+    for (const layer of otherLayersRef.current) {
+      const ls = layer.pageStrokes[curPgIdx] ?? [];
+      ls.forEach(s => drawStroke(s, ctx));
+    }
+    // 활성 레이어 스트로크
     strokesRef.current.forEach(s => drawStroke(s, ctx));
   }, [drawBackground]);
 
@@ -644,17 +674,52 @@ export const PenCanvas: React.FC<Props> = ({
       setPdfText(editingNote.pdfText);
       setPdfPageCount(count);
 
-      // 페이지 구조 + 손글씨 복원
-      const restored: Page[] = Array.from({ length: count }, (_, i) => ({
-        id: `p-pdf-${i+1}`,
-        strokes: (editingNote.pageStrokes?.[i] ?? []) as Stroke[],
-      }));
-      const startPage = Math.min(initialPageIdx ?? 0, restored.length - 1);
-      setPages(restored);
-      setPageIdx(startPage);
-      strokesRef.current = restored[startPage]?.strokes ?? [];
+      // 페이지 구조 + 손글씨 복원 (레이어 지원)
+      if (editingNote.penLayers && editingNote.penLayers.length > 0) {
+        // 레이어 데이터 있음: 활성 레이어 로드
+        const savedLayers = editingNote.penLayers;
+        const savedActiveId = editingNote.activeLayerId ?? savedLayers[0].id;
+        const activeLayer = savedLayers.find(l => l.id === savedActiveId) ?? savedLayers[0];
+        const others = savedLayers.filter(l => l.id !== activeLayer.id);
+        const restoredOthers = others.map(l => ({
+          id: l.id, name: l.name,
+          pageStrokes: (l.pageStrokes ?? []) as Stroke[][],
+        }));
+        const restored: Page[] = Array.from({ length: count }, (_, i) => ({
+          id: `p-pdf-${i+1}`,
+          strokes: ((activeLayer.pageStrokes ?? [])[i] ?? []) as Stroke[],
+        }));
+        setOtherLayers(restoredOthers);
+        otherLayersRef.current = restoredOthers;
+        setActiveLayerId(activeLayer.id);
+        setActiveLayerName(activeLayer.name);
+        activeLayerIdRef.current   = activeLayer.id;
+        activeLayerNameRef.current = activeLayer.name;
+        const startPage = Math.min(initialPageIdx ?? 0, restored.length - 1);
+        setPages(restored);
+        setPageIdx(startPage);
+        strokesRef.current = restored[startPage]?.strokes ?? [];
+      } else {
+        // 레이어 없음: 기존 pageStrokes를 기본 레이어로
+        const restored: Page[] = Array.from({ length: count }, (_, i) => ({
+          id: `p-pdf-${i+1}`,
+          strokes: (editingNote.pageStrokes?.[i] ?? []) as Stroke[],
+        }));
+        setOtherLayers([]);
+        otherLayersRef.current = [];
+        setActiveLayerId('layer-default');
+        setActiveLayerName('기본');
+        activeLayerIdRef.current   = 'layer-default';
+        activeLayerNameRef.current = '기본';
+        const startPage = Math.min(initialPageIdx ?? 0, restored.length - 1);
+        setPages(restored);
+        setPageIdx(startPage);
+        strokesRef.current = restored[startPage]?.strokes ?? [];
+      }
       baseImageRef.current = null;
 
+      // startPage는 위 두 분기에서 각각 setPageIdx로 처리됨 — pdf.js용으로 별도 계산
+      const startPage = Math.min(initialPageIdx ?? 0, count - 1);
       // pdf.js로 로드 후 시작 페이지 즉시 렌더, 나머지 백그라운드
       const pdfjsLib = initPdfJs();
       if (pdfjsLib) {
@@ -785,7 +850,7 @@ export const PenCanvas: React.FC<Props> = ({
 
   // ── Close dropdowns ─────────────────────────────────────────────────────
   useEffect(() => {
-    if (!showPaperMenu && !showColorPicker && !showSizePicker && !showEraserMenu && !showPenMenu) return;
+    if (!showPaperMenu && !showColorPicker && !showSizePicker && !showEraserMenu && !showPenMenu && !showFavMenu) return;
     const handler = (e: PointerEvent) => {
       const t = e.target as Node;
       if (colorPickerRef.current?.contains(t)) return;
@@ -793,13 +858,14 @@ export const PenCanvas: React.FC<Props> = ({
       if (penMenuRef.current?.contains(t))     return;
       if (eraserMenuRef.current?.contains(t))  return;
       if (paperMenuRef.current?.contains(t))   return;
+      if (favMenuRef.current?.contains(t))     return;
       if (hlMenuRef.current?.contains(t))      return;
       setShowColorPicker(false); setShowSizePicker(false); setShowHlMenu(false);
-      setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false);
+      setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowFavMenu(false);
     };
     const t = setTimeout(() => document.addEventListener('pointerdown', handler), 0);
     return () => { clearTimeout(t); document.removeEventListener('pointerdown', handler); };
-  }, [showPaperMenu, showColorPicker, showSizePicker, showEraserMenu, showPenMenu]);
+  }, [showPaperMenu, showColorPicker, showSizePicker, showEraserMenu, showPenMenu, showFavMenu]);
 
   // ── Palm rejection + 스와이프 새 페이지 ─────────────────────────────────
   useEffect(() => {
@@ -1383,6 +1449,67 @@ export const PenCanvas: React.FC<Props> = ({
     redrawBase();
   }, [redrawBase]);
 
+  // ── PDF 레이어 전환 ──────────────────────────────────────────────────────
+  const switchLayer = useCallback((newId: string) => {
+    if (newId === activeLayerIdRef.current) return;
+    const curPages = live.current.pages;
+    const curPageStrokes: Stroke[][] = curPages.map((p, i) =>
+      i === live.current.pageIdx ? [...strokesRef.current] as Stroke[] : [...p.strokes] as Stroke[]
+    );
+    const newLayerIdx = otherLayersRef.current.findIndex(l => l.id === newId);
+    if (newLayerIdx < 0) return;
+    const newLayer = otherLayersRef.current[newLayerIdx];
+    const updated = otherLayersRef.current.map((l, i) =>
+      i === newLayerIdx
+        ? { id: activeLayerIdRef.current, name: activeLayerNameRef.current, pageStrokes: curPageStrokes }
+        : l
+    );
+    const newPages: Page[] = curPages.map((p, i) => ({
+      id: p.id,
+      strokes: (newLayer.pageStrokes[i] ?? []) as Stroke[],
+    }));
+    otherLayersRef.current   = updated;
+    activeLayerIdRef.current = newId;
+    activeLayerNameRef.current = newLayer.name;
+    setOtherLayers(updated);
+    setActiveLayerId(newId);
+    setActiveLayerName(newLayer.name);
+    setPages(newPages);
+    strokesRef.current = newPages[live.current.pageIdx]?.strokes ?? [];
+    redrawBase();
+  }, [redrawBase]);
+
+  const addLayer = useCallback(() => {
+    const name = prompt('새 레이어 이름', `레이어 ${otherLayersRef.current.length + 2}`)?.trim();
+    if (!name) return;
+    const newId = `layer-${Date.now()}`;
+    const curPages = live.current.pages;
+    const curPageStrokes: Stroke[][] = curPages.map((p, i) =>
+      i === live.current.pageIdx ? [...strokesRef.current] as Stroke[] : [...p.strokes] as Stroke[]
+    );
+    const updated = [
+      ...otherLayersRef.current,
+      { id: activeLayerIdRef.current, name: activeLayerNameRef.current, pageStrokes: curPageStrokes },
+    ];
+    const emptyPages: Page[] = curPages.map(p => ({ id: p.id, strokes: [] }));
+    otherLayersRef.current     = updated;
+    activeLayerIdRef.current   = newId;
+    activeLayerNameRef.current = name;
+    setOtherLayers(updated);
+    setActiveLayerId(newId);
+    setActiveLayerName(name);
+    setPages(emptyPages);
+    strokesRef.current = [];
+    redrawBase();
+  }, [redrawBase]);
+
+  const renameActiveLayer = useCallback(() => {
+    const name = prompt('레이어 이름 변경', activeLayerNameRef.current)?.trim();
+    if (!name) return;
+    activeLayerNameRef.current = name;
+    setActiveLayerName(name);
+  }, []);
+
   // ── Save ─────────────────────────────────────────────────────────────────
   const handleSave = async () => {
     let rawUrl = getExportDataUrl();
@@ -1404,6 +1531,24 @@ export const PenCanvas: React.FC<Props> = ({
     const allPageStrokes = pages.map((p, i) =>
       i === live.current.pageIdx ? [...strokesRef.current] : p.strokes
     ) as SavedStroke[][];
+
+    // PDF 레이어 데이터 수집
+    let penLayersToSave: PenLayer[] | undefined;
+    let activeLayerIdToSave: string | undefined;
+    if (pdfBase64) {
+      const activeLyr: PenLayer = {
+        id:   activeLayerIdRef.current,
+        name: activeLayerNameRef.current,
+        pageStrokes: allPageStrokes,
+      };
+      const otherLyrs: PenLayer[] = otherLayersRef.current.map(l => ({
+        id:   l.id,
+        name: l.name,
+        pageStrokes: l.pageStrokes as SavedStroke[][],
+      }));
+      penLayersToSave     = [activeLyr, ...otherLyrs];
+      activeLayerIdToSave = activeLayerIdRef.current;
+    }
 
     // ── 전체 페이지 OCR (Cloud Vision) ──────────────────────────────────────
     const visionApiKey = localStorage.getItem('damoa_vision_api_key') ?? '';
@@ -1476,6 +1621,8 @@ export const PenCanvas: React.FC<Props> = ({
       pageOcrTexts.some(Boolean) ? pageOcrTexts : undefined,
       pageWordBoxes.some(b => b.length > 0) ? pageWordBoxes : undefined,
       pageWordBoxes.some(b => b.length > 0) ? { w: canvasW, h: canvasH } : undefined,
+      penLayersToSave,
+      activeLayerIdToSave,
     );
   };
 
@@ -1867,7 +2014,7 @@ export const PenCanvas: React.FC<Props> = ({
             <button type="button" title="색상"
               onClick={() => { setShowColorPicker(!showColorPicker); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
               className="px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 flex items-center gap-0.5 hover:opacity-90">
-              <span className="w-5 h-5 rounded-full shrink-0"
+              <span className="w-4 h-4 rounded-full shrink-0"
                 style={{backgroundColor: isEraser ? '#9ca3af' : penColor, opacity: isHL ? 0.6 : 1, outline: '2px solid rgba(255,255,255,0.25)', outlineOffset:'1px'}}/>
               <span className="text-[8px] text-white/25">▾</span>
             </button>
@@ -1996,6 +2143,62 @@ export const PenCanvas: React.FC<Props> = ({
             )}
           </div>
 
+          {/* ── 즐겨찾기 펜 ── */}
+          <div className="relative">
+            <button type="button" title="즐겨찾기 펜"
+              onClick={() => { setShowFavMenu(!showFavMenu); setShowColorPicker(false); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
+              className={`px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 ${showFavMenu?'text-white':'text-white/40 hover:text-white/80'}`}>
+              <Heart className="w-4 h-4" fill={showFavMenu ? 'currentColor' : 'none'}/>
+            </button>
+            {showFavMenu && (
+              <div ref={favMenuRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-1.5 shadow-xl z-50 min-w-[200px] flex flex-col gap-1">
+                {favPens.length === 0 && (
+                  <div className="px-3 py-2 text-xs text-stone-400 dark:text-slate-500">저장된 펜 없음</div>
+                )}
+                {favPens.map(fp => (
+                  <div key={fp.id} className="flex items-center gap-1">
+                    <button type="button"
+                      onClick={() => {
+                        setPenType(fp.penType); setPenSize(fp.penSize); setPenSizeInput(fp.penSize.toFixed(1));
+                        setPenColor(fp.penColor); setFountainIntensity(fp.fountainIntensity);
+                        setIsEraser(false); setShowFavMenu(false);
+                        live.current.penType = fp.penType; live.current.penSize = fp.penSize;
+                        live.current.penColor = fp.penColor; live.current.fountainIntensity = fp.fountainIntensity;
+                      }}
+                      className="flex-1 px-3 py-2 rounded-xl text-xs font-bold text-left flex items-center gap-2 cursor-pointer text-stone-800 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-800">
+                      <span className="w-3.5 h-3.5 rounded-full shrink-0 border border-stone-300" style={{backgroundColor: fp.penColor}}/>
+                      <span>{fp.name}</span>
+                      <span className="text-[10px] text-stone-400">{PEN_LABELS[fp.penType]} {fp.penSize}px</span>
+                    </button>
+                    <button type="button" title="삭제"
+                      onClick={() => {
+                        const next = favPens.filter(p => p.id !== fp.id);
+                        setFavPens(next);
+                        localStorage.setItem('damoa_fav_pens', JSON.stringify(next));
+                      }}
+                      className="p-1.5 text-stone-300 hover:text-red-400 cursor-pointer">
+                      <X className="w-3 h-3"/>
+                    </button>
+                  </div>
+                ))}
+                <div className="h-px bg-stone-100 dark:bg-slate-700 my-0.5"/>
+                <button type="button"
+                  onClick={() => {
+                    const name = prompt('펜 이름', `${PEN_LABELS[penType]} ${penSize}px`)?.trim();
+                    if (!name) return;
+                    const fp = { id: `fav-${Date.now()}`, name, penType, penSize, penColor, fountainIntensity };
+                    const next = [...favPens, fp];
+                    setFavPens(next);
+                    localStorage.setItem('damoa_fav_pens', JSON.stringify(next));
+                    setShowFavMenu(false);
+                  }}
+                  className="px-3 py-2 rounded-xl text-xs font-black text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-950/40 flex items-center gap-1.5 cursor-pointer">
+                  <Plus className="w-3.5 h-3.5"/><span>현재 펜 저장</span>
+                </button>
+              </div>
+            )}
+          </div>
+
           {/* ── Eraser ── */}
           <div className="relative flex items-center">
             <div className="flex items-center">
@@ -2036,9 +2239,9 @@ export const PenCanvas: React.FC<Props> = ({
 
           {/* ── 종이 설정 (Settings 패널 토글) ── */}
           <button type="button" title="종이 설정"
-            onClick={() => { setShowSettingsPanel(!showSettingsPanel); setShowColorPicker(false); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); }}
-            className={`px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 ${showSettingsPanel?'opacity-100':'opacity-40 hover:opacity-80'}`}>
-            <span className="text-base leading-none">{paperType==='black'?'🖤':paperType==='yellow'?'📒':'📄'}</span>
+            onClick={() => { setShowSettingsPanel(!showSettingsPanel); setShowColorPicker(false); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowFavMenu(false); }}
+            className={`px-1.5 py-1.5 cursor-pointer active:scale-95 shrink-0 ${showSettingsPanel?'text-white':'text-white/40 hover:text-white/80'}`}>
+            <Settings className="w-4 h-4"/>
           </button>
 
           {/* ── Palm rejection ── */}
@@ -2150,6 +2353,32 @@ export const PenCanvas: React.FC<Props> = ({
             </>
           )}
         </div>
+
+        {/* ── PDF 레이어 바 (PDF 노트 전용) ── */}
+        {pdfBase64 && (
+          <div className="mt-1 border-t border-white/10 pt-1.5 flex items-center gap-1 overflow-x-auto">
+            <Layers className="w-3.5 h-3.5 text-white/40 shrink-0"/>
+            {/* 활성 레이어 */}
+            <button type="button"
+              onClick={() => renameActiveLayer()}
+              className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-purple-600 text-white shrink-0 cursor-pointer">
+              {activeLayerName}
+            </button>
+            {/* 비활성 레이어 */}
+            {otherLayers.map(l => (
+              <button key={l.id} type="button"
+                onClick={() => switchLayer(l.id)}
+                className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-white/10 text-white/70 hover:bg-white/20 shrink-0 cursor-pointer">
+                {l.name}
+              </button>
+            ))}
+            {/* 새 레이어 추가 */}
+            <button type="button" onClick={addLayer}
+              className="w-6 h-6 rounded-full bg-white/10 hover:bg-white/20 text-white/60 flex items-center justify-center shrink-0 cursor-pointer">
+              <Plus className="w-3 h-3"/>
+            </button>
+          </div>
+        )}
 
         {/* Row 2.5: 종이 설정 패널 */}
         {showSettingsPanel && (

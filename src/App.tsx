@@ -158,6 +158,12 @@ export default function App() {
     ocrCanvasDims?: { w: number; h: number },
     penLayers?: PenLayer[],
     activeLayerId?: string,
+    extraData?: {
+      coverType?: 'none'|'color'|'gradient';
+      coverColor?: string;
+      coverGradient?: string;
+      outline?: Array<{label: string; pageIdx: number}>;
+    },
   ) => {
     const now = Date.now();
     const noteId = id || `note-${now}-${Math.random().toString(36).slice(2)}`;
@@ -183,6 +189,10 @@ export default function App() {
       ocrCanvasDims: ocrCanvasDims ?? editingNote?.ocrCanvasDims,
       penLayers:     penLayers     ?? editingNote?.penLayers,
       activeLayerId: activeLayerId ?? editingNote?.activeLayerId,
+      coverType:     extraData?.coverType  ?? editingNote?.coverType,
+      coverColor:    extraData?.coverColor  ?? editingNote?.coverColor,
+      coverGradient: extraData?.coverGradient ?? editingNote?.coverGradient,
+      outline:       extraData?.outline    ?? editingNote?.outline,
     };
     await saveNote(note);
     await loadNotes();

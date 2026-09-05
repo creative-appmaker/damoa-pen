@@ -46,6 +46,12 @@ export interface PenNote {
   ocrCanvasDims?: { w: number; h: number }; // OCR 당시 캔버스 CSS 픽셀 크기 (좌표 정확도용)
   penLayers?: PenLayer[];    // PDF 노트 전용 레이어 목록
   activeLayerId?: string;    // 현재 활성 레이어 ID
+  // ── 노트 커버 ─────────────────────────────────────────────────────────────
+  coverType?: 'none' | 'color' | 'gradient';
+  coverColor?: string;       // 단색 커버색
+  coverGradient?: string;    // CSS gradient string
+  // ── 개요 (목차) ────────────────────────────────────────────────────────────
+  outline?: Array<{label: string; pageIdx: number}>;
 }
 
 /** 단어 바운딩 박스 — 좌표는 캔버스 CSS 픽셀 비율 (0.0~1.0) */

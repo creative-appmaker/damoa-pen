@@ -4,6 +4,7 @@ import {
   Hand, ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
   FileText, FolderOpen, Tag, Lock, Unlock, Settings, X, Plus,
   Undo2, Redo2, Search, Image as ImageIcon, Heart, Layers, Eye, EyeOff,
+  MoreHorizontal, BookOpen, Palette,
 } from 'lucide-react';
 import { PenNote, Folder, PenType, StrokePoint, SavedStroke, PenSettings, WordBox, PenLayer } from '../types';
 
@@ -39,6 +40,12 @@ interface Props {
     ocrCanvasDims?: { w: number; h: number },
     penLayers?: PenLayer[],
     activeLayerId?: string,
+    extraData?: {
+      coverType?: 'none'|'color'|'gradient';
+      coverColor?: string;
+      coverGradient?: string;
+      outline?: Array<{label: string; pageIdx: number}>;
+    },
   ) => void;
   onBack: () => void;
   initialSearchQuery?: string; // 검색어 → 해당 페이지로 이동
@@ -433,6 +440,16 @@ export const PenCanvas: React.FC<Props> = ({
   const tabDragRef = useRef<{fromIdx:number;startX:number;moved:boolean;longFired:boolean;timer:ReturnType<typeof setTimeout>|null} | null>(null);
   const [dragOverTabIdx, setDragOverTabIdx] = useState<number|null>(null);
 
+  // ── 노트 커버 ─────────────────────────────────────────────────────────────
+  const [noteCoverType,     setNoteCoverType]     = useState<'none'|'color'|'gradient'>(editingNote?.coverType ?? 'none');
+  const [noteCoverColor,    setNoteCoverColor]    = useState(editingNote?.coverColor ?? '#8b5cf6');
+  const [noteCoverGradient, setNoteCoverGradient] = useState(editingNote?.coverGradient ?? 'linear-gradient(135deg,#8b5cf6,#ec4899)');
+
+  // ── 개요 (목차) ────────────────────────────────────────────────────────────
+  const [outline,          setOutline]          = useState<Array<{label:string;pageIdx:number}>>(editingNote?.outline ?? []);
+  const [showOutlinePanel, setShowOutlinePanel] = useState(false);
+  const [newOutlineLabel,  setNewOutlineLabel]  = useState('');
+
   // ── 형광펜 설정 ───────────────────────────────────────────────────────────
   const [showHlMenu,       setShowHlMenu]       = useState(false);
   const [hlOpacity,        setHlOpacity]        = useState(0.38);
@@ -451,6 +468,7 @@ export const PenCanvas: React.FC<Props> = ({
   const activeLayerIdRef    = useRef('layer-default');
   const activeLayerNameRef  = useRef('기본');
   const activeLayerHiddenRef = useRef(false);
+  const skipReinitForPdfRef = useRef(false); // PDF 자동저장 후 재초기화 방지
 
   const live = useRef({
     penOnlyMode: true,
@@ -685,6 +703,11 @@ export const PenCanvas: React.FC<Props> = ({
 
   // ── Load editing note ───────────────────────────────────────────────────
   useEffect(() => {
+    // PDF 자동저장 직후 onSave가 editingNote 업데이트를 트리거하면 재초기화 방지
+    if (skipReinitForPdfRef.current) {
+      skipReinitForPdfRef.current = false;
+      return;
+    }
     // PDF/캐시 초기화 — ImageBitmap GPU 메모리 해제
     pdfDocRef.current = null;
     pdfCacheRef.current.forEach(bmp => bmp.close());
@@ -806,6 +829,10 @@ export const PenCanvas: React.FC<Props> = ({
     setTags(editingNote?.tags ?? []);
     setTagsInput((editingNote?.tags ?? []).join(', '));
     setNoteFolderId(editingNote?.folderId);
+    setNoteCoverType(editingNote?.coverType ?? 'none');
+    setNoteCoverColor(editingNote?.coverColor ?? '#8b5cf6');
+    setNoteCoverGradient(editingNote?.coverGradient ?? 'linear-gradient(135deg,#8b5cf6,#ec4899)');
+    setOutline(editingNote?.outline ?? []);
     const pt = editingNote?.paperType ?? (darkMode ? 'black' : 'white');
     setPaperType(pt);
     live.current.paperType = pt;
@@ -1658,6 +1685,12 @@ export const PenCanvas: React.FC<Props> = ({
       pageWordBoxes.some(b => b.length > 0) ? { w: canvasW, h: canvasH } : undefined,
       penLayersToSave,
       activeLayerIdToSave,
+      {
+        coverType:     noteCoverType !== 'none' ? noteCoverType : undefined,
+        coverColor:    noteCoverType === 'color'    ? noteCoverColor    : undefined,
+        coverGradient: noteCoverType === 'gradient' ? noteCoverGradient : undefined,
+        outline:       outline.length > 0 ? outline : undefined,
+      },
     );
   };
 
@@ -1783,7 +1816,20 @@ export const PenCanvas: React.FC<Props> = ({
       await loadPageBg(0);
       setTimeout(() => clearActive(), 30);
 
-      // ⑥ 다음 4페이지만 백그라운드 프리렌더 (메모리 절약 — LRU 캐시가 나머지 처리)
+      // ⑥ PDF 노트 자동저장 (새 탭인 경우 noteId 부여 → 탭 전환 시 PDF 상태 보존)
+      if (!editingNote?.id) {
+        skipReinitForPdfRef.current = true;
+        const noteTitle = title || file.name.replace(/\.pdf$/i, '');
+        onSave(
+          '', extractedText.trim(), noteTitle, live.current.paperType,
+          [], undefined,
+          base64, extractedText.trim(), pdf.numPages,
+          undefined, undefined, undefined,
+          undefined, undefined, undefined, undefined, undefined, undefined,
+        );
+      }
+
+      // ⑦ 다음 4페이지만 백그라운드 프리렌더 (메모리 절약 — LRU 캐시가 나머지 처리)
       setTimeout(async () => {
         const prefetchEnd = Math.min(5, pdf.numPages);
         for (let i = 1; i < prefetchEnd; i++) {
@@ -1810,65 +1856,67 @@ export const PenCanvas: React.FC<Props> = ({
       {/* ── 탭 바 ── */}
       {openTabs && openTabs.length > 0 && (
         <div className="relative">
-          <div className="flex items-center bg-stone-200 dark:bg-slate-900 border-b border-stone-300 dark:border-slate-700 overflow-x-auto"
+          <div className="flex items-center bg-stone-200 dark:bg-slate-900 border-b border-stone-300 dark:border-slate-700 overflow-x-hidden"
             data-tab-bar="1"
-            style={{touchAction:'auto', scrollbarWidth:'none', WebkitOverflowScrolling:'touch'}}>
+            style={{touchAction:'none', scrollbarWidth:'none', userSelect:'none'}}
+            onPointerDown={e => {
+              const container = e.currentTarget as HTMLDivElement;
+              const tabEls = container.querySelectorAll('[data-tab-idx]');
+              let hitIdx: number | null = null;
+              tabEls.forEach(el => {
+                const rect = el.getBoundingClientRect();
+                if (e.clientX >= rect.left && e.clientX <= rect.right &&
+                    e.clientY >= rect.top  && e.clientY <= rect.bottom) {
+                  hitIdx = Number((el as HTMLElement).dataset.tabIdx);
+                }
+              });
+              if (hitIdx === null) return;
+              container.setPointerCapture(e.pointerId);
+              tabDragRef.current = { fromIdx: hitIdx, startX: e.clientX, moved: false, longFired: false, timer: null };
+            }}
+            onPointerMove={e => {
+              const dr = tabDragRef.current;
+              if (!dr) return;
+              const dx = Math.abs(e.clientX - dr.startX);
+              if (dx > 8) {
+                dr.moved = true;
+                if (dr.timer) { clearTimeout(dr.timer); dr.timer = null; }
+              }
+              if (dr.moved) {
+                const container = e.currentTarget as HTMLDivElement;
+                const tabEls = container.querySelectorAll('[data-tab-idx]');
+                let over: number | null = null;
+                tabEls.forEach(el => {
+                  const rect = el.getBoundingClientRect();
+                  if (e.clientX >= rect.left && e.clientX <= rect.right) over = Number((el as HTMLElement).dataset.tabIdx);
+                });
+                setDragOverTabIdx(over);
+              }
+            }}
+            onPointerUp={e => {
+              const dr = tabDragRef.current;
+              if (!dr) return;
+              if (dr.timer) clearTimeout(dr.timer);
+              if (dr.moved && dragOverTabIdx !== null && dragOverTabIdx !== dr.fromIdx) {
+                onTabReorder?.(dr.fromIdx, dragOverTabIdx);
+              } else if (!dr.moved) {
+                onTabSwitch?.(dr.fromIdx);
+              }
+              tabDragRef.current = null;
+              setDragOverTabIdx(null);
+            }}
+            onPointerCancel={() => {
+              if (tabDragRef.current?.timer) clearTimeout(tabDragRef.current.timer);
+              tabDragRef.current = null;
+              setDragOverTabIdx(null);
+            }}>
             {openTabs.map((tab, i) => (
               <div key={i} className="relative shrink-0">
                 <div
-                  className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold cursor-pointer border-b-2 transition-all select-none ${dragOverTabIdx===i&&tabDragRef.current?.fromIdx!==i?'opacity-50':''}`}
+                  className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold cursor-pointer border-b-2 transition-all select-none ${dragOverTabIdx===i&&tabDragRef.current?.fromIdx!==i?'opacity-50 scale-95':''}`}
                   style={i === activeTabIdxProp
                     ? { background: tab.color, borderColor: tab.color, color: tabTextColor(tab.color) }
                     : { background: tab.color + '33', borderColor: 'transparent', color: tab.color }}
-                  onPointerDown={e => {
-                    // 드래그+롱프레스 통합 핸들러
-                    const timer = setTimeout(() => {
-                      if (tabDragRef.current && !tabDragRef.current.moved) {
-                        tabDragRef.current.longFired = true;
-                        onTabEdit?.(i);
-                      }
-                    }, 550);
-                    tabDragRef.current = { fromIdx: i, startX: e.clientX, moved: false, longFired: false, timer };
-                    (e.currentTarget as Element).setPointerCapture(e.pointerId);
-                  }}
-                  onPointerMove={e => {
-                    const dr = tabDragRef.current;
-                    if (!dr || dr.fromIdx !== i) return;
-                    const dx = Math.abs(e.clientX - dr.startX);
-                    if (dx > 8) {
-                      dr.moved = true;
-                      if (dr.timer) { clearTimeout(dr.timer); dr.timer = null; }
-                    }
-                    if (dr.moved) {
-                      // 드래그 중: 어느 탭 위에 있는지 계산
-                      const tabEls = (e.currentTarget as Element).closest('[data-tab-bar]')?.querySelectorAll('[data-tab-idx]');
-                      if (tabEls) {
-                        let over: number | null = null;
-                        tabEls.forEach(el => {
-                          const rect = el.getBoundingClientRect();
-                          if (e.clientX >= rect.left && e.clientX <= rect.right) over = Number((el as HTMLElement).dataset.tabIdx);
-                        });
-                        setDragOverTabIdx(over);
-                      }
-                    }
-                  }}
-                  onPointerUp={e => {
-                    const dr = tabDragRef.current;
-                    if (!dr) return;
-                    if (dr.timer) clearTimeout(dr.timer);
-                    if (dr.moved && dragOverTabIdx !== null && dragOverTabIdx !== dr.fromIdx) {
-                      onTabReorder?.(dr.fromIdx, dragOverTabIdx);
-                    } else if (!dr.longFired && !dr.moved) {
-                      onTabSwitch?.(i);
-                    }
-                    tabDragRef.current = null;
-                    setDragOverTabIdx(null);
-                  }}
-                  onPointerCancel={() => {
-                    if (tabDragRef.current?.timer) clearTimeout(tabDragRef.current.timer);
-                    tabDragRef.current = null;
-                    setDragOverTabIdx(null);
-                  }}
                   data-tab-idx={i}>
                   {/* 제목 */}
                   <span className="max-w-[80px] truncate">{tab.title}</span>
@@ -2340,7 +2388,7 @@ export const PenCanvas: React.FC<Props> = ({
 
           {/* ── 종이 설정 (Settings 패널 토글) ── */}
           <button type="button" title="종이 설정"
-            onClick={() => { setShowSettingsPanel(!showSettingsPanel); setShowColorPicker(false); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowFavMenu(false); }}
+            onClick={() => { setShowSettingsPanel(v => !v); setShowOutlinePanel(false); setShowNoteInfo(false); setShowColorPicker(false); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowFavMenu(false); }}
             className={`px-1.5 py-1.5 md:px-2 md:py-2 cursor-pointer active:scale-95 shrink-0 ${showSettingsPanel?'text-white':'text-white/40 hover:text-white/80'}`}>
             <Settings className="w-4 h-4 md:w-5 md:h-5"/>
           </button>
@@ -2438,6 +2486,15 @@ export const PenCanvas: React.FC<Props> = ({
             <Tag className="w-4 h-4 md:w-5 md:h-5"/>
           </button>
 
+          {/* ── 개요 (목차) ── */}
+          <div className="w-px h-4 bg-white/15 mx-1 shrink-0"/>
+          <button type="button" title="개요"
+            onClick={() => { setShowOutlinePanel(v => !v); setShowSettingsPanel(false); setShowNoteInfo(false); }}
+            className={`px-1.5 py-1.5 md:px-2 md:py-2 cursor-pointer active:scale-95 shrink-0 relative ${showOutlinePanel?'text-white':'text-white/40 hover:text-white/80'}`}>
+            <MoreHorizontal className="w-4 h-4 md:w-5 md:h-5"/>
+            {outline.length > 0 && <span className="absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full bg-blue-400"/>}
+          </button>
+
           {/* ── 페이지 병합 ── */}
           {allNotes && allNotes.length > 1 && (
             <>
@@ -2504,6 +2561,52 @@ export const PenCanvas: React.FC<Props> = ({
                 </div>
               </div>
             )}
+            {/* 노트 커버 */}
+            <div>
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <Palette className="w-3 h-3 text-white/40"/>
+                <div className="text-[10px] font-black text-white/40 uppercase tracking-wider">노트 커버</div>
+              </div>
+              <div className="flex gap-1 mb-2">
+                {(['none','color','gradient'] as const).map(ct => (
+                  <button key={ct} type="button"
+                    onClick={() => setNoteCoverType(ct)}
+                    className={`flex-1 py-1 rounded-lg text-[10px] font-black cursor-pointer ${noteCoverType===ct?'bg-purple-600 text-white':'bg-stone-100 dark:bg-slate-800 text-stone-600 dark:text-slate-300'}`}>
+                    {ct==='none'?'없음':ct==='color'?'단색':'그라데이션'}
+                  </button>
+                ))}
+              </div>
+              {noteCoverType === 'color' && (
+                <div className="flex flex-wrap gap-1.5 mb-1">
+                  {['#8b5cf6','#3b82f6','#22c55e','#f97316','#ec4899','#ef4444','#eab308','#14b8a6','#1c1917','#64748b'].map(c => (
+                    <button key={c} type="button"
+                      onClick={() => setNoteCoverColor(c)}
+                      className={`w-6 h-6 rounded-full cursor-pointer border-2 transition-transform ${noteCoverColor===c?'border-white scale-110':'border-transparent'}`}
+                      style={{background:c}}/>
+                  ))}
+                  <input type="color" value={noteCoverColor} onChange={e => setNoteCoverColor(e.target.value)}
+                    onPointerDown={e => e.stopPropagation()}
+                    className="w-6 h-6 rounded-full cursor-pointer border border-white/20"/>
+                </div>
+              )}
+              {noteCoverType === 'gradient' && (
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    'linear-gradient(135deg,#8b5cf6,#ec4899)',
+                    'linear-gradient(135deg,#3b82f6,#06b6d4)',
+                    'linear-gradient(135deg,#22c55e,#06b6d4)',
+                    'linear-gradient(135deg,#f97316,#eab308)',
+                    'linear-gradient(135deg,#ef4444,#f97316)',
+                    'linear-gradient(135deg,#1c1917,#44403c)',
+                  ].map(g => (
+                    <button key={g} type="button"
+                      onClick={() => setNoteCoverGradient(g)}
+                      className={`w-8 h-8 rounded-lg cursor-pointer border-2 transition-transform ${noteCoverGradient===g?'border-white scale-110':'border-transparent'}`}
+                      style={{background:g}}/>
+                  ))}
+                </div>
+              )}
+            </div>
             {/* 줄 표시 */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
@@ -2523,6 +2626,70 @@ export const PenCanvas: React.FC<Props> = ({
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Row 2.7: 개요 패널 */}
+        {showOutlinePanel && (
+          <div className="mt-1 border-t border-white/10 pt-2 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-black text-white/40 uppercase tracking-wider flex items-center gap-1">
+                <BookOpen className="w-3 h-3"/> 개요 (목차)
+              </div>
+              <span className="text-[10px] text-white/30">{outline.length}개</span>
+            </div>
+            {/* 기존 개요 항목 */}
+            {outline.length > 0 && (
+              <div className="flex flex-col gap-1 max-h-32 overflow-y-auto pr-1">
+                {outline.map((item, idx) => (
+                  <div key={idx} className="flex items-center gap-1.5">
+                    <button type="button"
+                      onClick={() => animatedGoToPageRef.current?.(item.pageIdx)}
+                      className="flex-1 flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-left cursor-pointer active:scale-95">
+                      <span className="text-[10px] font-black text-purple-300 shrink-0">{item.pageIdx + 1}p</span>
+                      <span className="text-[11px] text-white/80 truncate">{item.label}</span>
+                    </button>
+                    <button type="button"
+                      onClick={() => setOutline(prev => prev.filter((_, i) => i !== idx))}
+                      className="shrink-0 text-white/30 hover:text-red-400 cursor-pointer p-1">
+                      <X className="w-3 h-3"/>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* 현재 페이지에 개요 추가 */}
+            <div className="flex items-center gap-1.5">
+              <input
+                value={newOutlineLabel}
+                onChange={e => setNewOutlineLabel(e.target.value)}
+                placeholder={`${pageIdx + 1}p 개요 제목...`}
+                className="flex-1 text-xs bg-white/10 text-white rounded-xl px-2.5 py-1.5 outline-none placeholder-white/30 border border-white/10 focus:border-purple-400"
+                style={{touchAction:'auto'}}
+                onPointerDown={e => e.stopPropagation()}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && newOutlineLabel.trim()) {
+                    setOutline(prev => {
+                      const next = prev.filter(o => o.pageIdx !== pageIdx);
+                      return [...next, {label: newOutlineLabel.trim(), pageIdx}].sort((a,b)=>a.pageIdx-b.pageIdx);
+                    });
+                    setNewOutlineLabel('');
+                  }
+                }}
+              />
+              <button type="button"
+                onClick={() => {
+                  if (!newOutlineLabel.trim()) return;
+                  setOutline(prev => {
+                    const next = prev.filter(o => o.pageIdx !== pageIdx);
+                    return [...next, {label: newOutlineLabel.trim(), pageIdx}].sort((a,b)=>a.pageIdx-b.pageIdx);
+                  });
+                  setNewOutlineLabel('');
+                }}
+                className="shrink-0 px-2.5 py-1.5 rounded-xl bg-purple-600 text-white text-xs font-black cursor-pointer active:scale-95">
+                추가
+              </button>
             </div>
           </div>
         )}

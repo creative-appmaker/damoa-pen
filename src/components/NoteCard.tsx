@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { Pin, Trash2, FileText, FolderOpen, X } from 'lucide-react';
 import { PenNote, Folder } from '../types';
 
-export type ViewMode = 'grid' | 'grid-large' | 'list' | 'compact';
+export type ViewMode = 'grid' | 'grid-large' | 'list' | 'compact' | 'mini';
 
 interface Props {
   note: PenNote;
@@ -70,6 +70,13 @@ export const NoteCard: React.FC<Props> = ({
   const sq = searchQuery?.trim() ?? '';
   const bgColor   = note.paperType==='black'?'#1a1a1a':note.paperType==='yellow'?'#fef9c3':'#ffffff';
   const textColor = note.paperType==='black'?'#e2e8f0':'#1c1917';
+  // 커버 배경 스타일
+  const coverStyle: React.CSSProperties = (() => {
+    if (note.coverType === 'gradient' && note.coverGradient) return { background: note.coverGradient };
+    if (note.coverType === 'color' && note.coverColor) return { backgroundColor: note.coverColor };
+    return { backgroundColor: bgColor };
+  })();
+  const hasCover = note.coverType && note.coverType !== 'none' && (note.coverColor || note.coverGradient);
   const hasPdf    = !!note.pdfBase64;
   const hasOcr    = !!(note.ocrText?.trim() || note.pageOcrTexts?.some(t => t?.trim()));
   const hasStrokes = !!(note.pageStrokes?.some(p => p.length > 0));
@@ -239,6 +246,42 @@ export const NoteCard: React.FC<Props> = ({
     );
   }
 
+  // ── MINI 뷰 (정사각형 소형 카드, 5열+) ────────────────────────────────────
+  if (viewMode === 'mini') {
+    return (
+      <>
+        {movePopup}
+        <div {...longPressProps}
+          className="group relative rounded-xl overflow-hidden border border-stone-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-all cursor-pointer active:scale-[0.97] flex flex-col"
+          style={hasCover ? coverStyle : {backgroundColor:bgColor}}
+          onClick={() => onEdit(note)}>
+          <div className="relative aspect-square overflow-hidden">
+            {hasCover
+              ? <div className="w-full h-full" style={coverStyle}/>
+              : note.dataUrl
+                ? <img src={note.dataUrl} alt="" className="w-full h-full object-cover object-top" loading="lazy"/>
+                : <div className="w-full h-full flex items-center justify-center" style={{backgroundColor:bgColor}}><span className="text-2xl opacity-20">✏️</span></div>
+            }
+            {note.isPinned && (
+              <div className="absolute top-1 left-1 w-3.5 h-3.5 bg-amber-400 rounded-full flex items-center justify-center">
+                <Pin className="w-2 h-2 text-stone-900 fill-stone-900"/>
+              </div>
+            )}
+            <button type="button" onClick={e=>{e.stopPropagation();onDeleteRequest(note);}}
+              className="absolute top-1 right-1 w-5 h-5 bg-black/40 hover:bg-red-500/90 rounded-md flex items-center justify-center shadow cursor-pointer opacity-0 group-hover:opacity-100 backdrop-blur-sm">
+              <Trash2 className="w-2.5 h-2.5 text-white"/>
+            </button>
+          </div>
+          <div className="px-1.5 py-0.5" style={hasCover ? {} : {backgroundColor:bgColor}}>
+            <div className="text-[9px] font-black truncate" style={{color: hasCover && note.coverType==='color' ? '#fff' : textColor}}>
+              {sq ? hl(note.title || '제목 없음', sq) : (note.title || '제목 없음')}
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  }
+
   // ── GRID-LARGE 뷰 (큰 카드, 1~2열) ──────────────────────────────────────
   if (viewMode === 'grid-large') {
     return (
@@ -297,9 +340,11 @@ export const NoteCard: React.FC<Props> = ({
         style={{backgroundColor:bgColor}}
         onClick={() => onEdit(note)}>
         <div className="relative aspect-[3/4] overflow-hidden">
-          {note.dataUrl
-            ? <img src={note.dataUrl} alt="" className="w-full h-full object-cover object-top" loading="lazy"/>
-            : <div className="w-full h-full flex items-center justify-center" style={{backgroundColor:bgColor}}><span className="text-4xl opacity-20">✏️</span></div>}
+          {hasCover
+            ? <div className="w-full h-full" style={coverStyle}/>
+            : note.dataUrl
+              ? <img src={note.dataUrl} alt="" className="w-full h-full object-cover object-top" loading="lazy"/>
+              : <div className="w-full h-full flex items-center justify-center" style={{backgroundColor:bgColor}}><span className="text-4xl opacity-20">✏️</span></div>}
           {note.isPinned && (
             <div className="absolute top-2 left-2 w-6 h-6 bg-amber-400 rounded-full flex items-center justify-center shadow-md">
               <Pin className="w-3 h-3 text-stone-900 fill-stone-900"/>

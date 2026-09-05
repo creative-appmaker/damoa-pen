@@ -51,6 +51,7 @@ const VIEW_MODES: { mode: ViewMode; icon: React.ReactNode; label: string }[] = [
   { mode: 'grid',       icon: <LayoutGrid className="w-4 h-4"/>,   label: '카드' },
   { mode: 'grid-large', icon: <Rows3 className="w-4 h-4"/>,        label: '큰 카드' },
   { mode: 'compact',    icon: <AlignJustify className="w-4 h-4"/>, label: '컴팩트' },
+  { mode: 'mini',       icon: <LayoutGrid className="w-3 h-3"/>,   label: '미니' },
   { mode: 'list',       icon: <List className="w-4 h-4"/>,         label: '목록' },
 ];
 
@@ -108,6 +109,7 @@ export const NoteList: React.FC<Props> = ({
     'grid':       'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3',
     'grid-large': 'grid grid-cols-1 sm:grid-cols-2 gap-4',
     'compact':    'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2',
+    'mini':       'grid grid-cols-4 sm:grid-cols-5 md:grid-cols-7 lg:grid-cols-8 gap-1.5',
     'list':       'flex flex-col gap-2',
   };
 

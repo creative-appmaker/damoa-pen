@@ -33,6 +33,7 @@ interface Props {
   notes: PenNote[];
   folders?: Folder[];
   onNew: () => void;
+  onOpenPdf?: (file: File) => void;
   onEdit: (note: PenNote, query?: string) => void;
   onDelete: (id: string) => void;
   onTogglePin: (note: PenNote) => void;
@@ -54,11 +55,13 @@ const VIEW_MODES: { mode: ViewMode; icon: React.ReactNode; label: string }[] = [
 ];
 
 export const NoteList: React.FC<Props> = ({
-  notes, folders, onNew, onEdit, onDelete, onTogglePin,
+  notes, folders, onNew, onOpenPdf, onEdit, onDelete, onTogglePin,
   onMoveToFolder, onOpenFolderPanel, onSettings, darkMode,
   searchQuery: externalQuery, onSearchQueryChange,
 }) => {
   const [internalQuery, setInternalQuery] = useState('');
+  const [showFabMenu, setShowFabMenu] = useState(false);
+  const pdfInputRef = React.useRef<HTMLInputElement | null>(null);
   const query = externalQuery !== undefined ? externalQuery : internalQuery;
   const setQuery = (q: string) => {
     setInternalQuery(q);
@@ -296,9 +299,27 @@ export const NoteList: React.FC<Props> = ({
 
       {/* FAB */}
       {notes.length > 0 && (
-        <div className="fixed bottom-6 right-6 z-20" style={{bottom:'calc(1.5rem + env(safe-area-inset-bottom,0px))'}}>
-          <button type="button" onClick={onNew}
-            className="w-14 h-14 bg-gradient-to-br from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white rounded-2xl shadow-2xl flex items-center justify-center cursor-pointer active:scale-95 transition-all">
+        <div className="fixed bottom-6 right-6 z-20 flex flex-col items-end gap-2" style={{bottom:'calc(1.5rem + env(safe-area-inset-bottom,0px))'}}>
+          {/* 숨은 PDF 파일 입력 */}
+          <input ref={pdfInputRef} type="file" accept=".pdf" className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) { onOpenPdf?.(f); } e.target.value = ''; setShowFabMenu(false); }}/>
+          {/* 미니 메뉴 */}
+          {showFabMenu && (
+            <div className="flex flex-col gap-1.5 items-end animate-fadeIn">
+              <button type="button" onClick={() => { setShowFabMenu(false); onNew(); }}
+                className="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-slate-800 text-stone-800 dark:text-slate-100 text-sm font-black rounded-2xl shadow-xl cursor-pointer active:scale-95 border border-stone-100 dark:border-slate-700">
+                <span className="text-base">✏️</span> 새 노트
+              </button>
+              <button type="button" onClick={() => pdfInputRef.current?.click()}
+                className="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-slate-800 text-stone-800 dark:text-slate-100 text-sm font-black rounded-2xl shadow-xl cursor-pointer active:scale-95 border border-stone-100 dark:border-slate-700">
+                <span className="text-base">📄</span> PDF 불러오기
+              </button>
+            </div>
+          )}
+          {/* 메인 FAB */}
+          <button type="button" onClick={() => setShowFabMenu(v => !v)}
+            className={`w-14 h-14 bg-gradient-to-br from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white rounded-2xl shadow-2xl flex items-center justify-center cursor-pointer active:scale-95 transition-all ${showFabMenu?'rotate-45':''}`}
+            style={{transition:'transform 0.2s'}}>
             <Plus className="w-7 h-7"/>
           </button>
         </div>

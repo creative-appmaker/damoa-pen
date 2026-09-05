@@ -52,7 +52,9 @@ interface Props {
   onTabTitleChange?: (idx: number, title: string) => void;
   onTabColorSet?: (idx: number, color: string) => void;
   tabEditIdx?: number | null;
+  onTabReorder?: (fromIdx: number, toIdx: number) => void;
   onNewTab?: () => void;
+  initialPdfFile?: File | null;
   onAutoSave?: (noteId: string | undefined, strokes: SavedStroke[][]) => void;
   initialPageIdx?: number;
   onPageChange?: (pageIdx: number) => void;
@@ -314,7 +316,8 @@ export const PenCanvas: React.FC<Props> = ({
   editingNote, darkMode, folders = [], onSave, onBack,
   initialSearchQuery,
   openTabs, activeTabIdx: activeTabIdxProp = 0,
-  onTabSwitch, onTabClose, onTabColorCycle, onTabEdit, onTabTitleChange, onTabColorSet, tabEditIdx, onNewTab,
+  onTabSwitch, onTabClose, onTabColorCycle, onTabEdit, onTabTitleChange, onTabColorSet, tabEditIdx, onTabReorder, onNewTab,
+  initialPdfFile,
   onAutoSave,
   initialPageIdx,
   onPageChange,
@@ -425,6 +428,10 @@ export const PenCanvas: React.FC<Props> = ({
   const [activeLayerName, setActiveLayerName] = useState('기본');
   const [activeLayerHidden, setActiveLayerHidden] = useState(false);
   const [showLayerPanel,  setShowLayerPanel]  = useState(false);
+
+  // ── 탭 드래그 정렬 ───────────────────────────────────────────────────────────
+  const tabDragRef = useRef<{fromIdx:number;startX:number;moved:boolean;longFired:boolean;timer:ReturnType<typeof setTimeout>|null} | null>(null);
+  const [dragOverTabIdx, setDragOverTabIdx] = useState<number|null>(null);
 
   // ── 형광펜 설정 ───────────────────────────────────────────────────────────
   const [showHlMenu,       setShowHlMenu]       = useState(false);
@@ -1429,6 +1436,16 @@ export const PenCanvas: React.FC<Props> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSearchQuery, pageIdx, editingNote?.id]);
 
+  // ── initialPdfFile 자동 import ───────────────────────────────────────────
+  useEffect(() => {
+    if (initialPdfFile) {
+      // 약간 지연 후 import (캔버스 초기화 완료 대기)
+      const t = setTimeout(() => importPdf(initialPdfFile), 400);
+      return () => clearTimeout(t);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPdfFile]);
+
   // ── 사진 첨부 ──────────────────────────────────────────────────────────────
   const importImage = useCallback(async (file: File) => {
     const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -1794,27 +1811,71 @@ export const PenCanvas: React.FC<Props> = ({
       {openTabs && openTabs.length > 0 && (
         <div className="relative">
           <div className="flex items-center bg-stone-200 dark:bg-slate-900 border-b border-stone-300 dark:border-slate-700 overflow-x-auto"
+            data-tab-bar="1"
             style={{touchAction:'auto', scrollbarWidth:'none', WebkitOverflowScrolling:'touch'}}>
             {openTabs.map((tab, i) => (
               <div key={i} className="relative shrink-0">
                 <div
-                  className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold cursor-pointer border-b-2 transition-all select-none`}
+                  className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold cursor-pointer border-b-2 transition-all select-none ${dragOverTabIdx===i&&tabDragRef.current?.fromIdx!==i?'opacity-50':''}`}
                   style={i === activeTabIdxProp
                     ? { background: tab.color, borderColor: tab.color, color: tabTextColor(tab.color) }
-                    : { background: tab.color + '33', borderColor: 'transparent', color: tabTextColor(tab.color) }}
-                  onClick={() => { onTabSwitch?.(i); }}
+                    : { background: tab.color + '33', borderColor: 'transparent', color: tab.color }}
                   onPointerDown={e => {
-                    const t = setTimeout(() => { onTabEdit?.(i); }, 500);
-                    (e.currentTarget as any)._longPressTimer = t;
+                    // 드래그+롱프레스 통합 핸들러
+                    const timer = setTimeout(() => {
+                      if (tabDragRef.current && !tabDragRef.current.moved) {
+                        tabDragRef.current.longFired = true;
+                        onTabEdit?.(i);
+                      }
+                    }, 550);
+                    tabDragRef.current = { fromIdx: i, startX: e.clientX, moved: false, longFired: false, timer };
+                    (e.currentTarget as Element).setPointerCapture(e.pointerId);
                   }}
-                  onPointerUp={e => { clearTimeout((e.currentTarget as any)._longPressTimer); }}
-                  onPointerLeave={e => { clearTimeout((e.currentTarget as any)._longPressTimer); }}
-                  onPointerCancel={e => { clearTimeout((e.currentTarget as any)._longPressTimer); }}>
+                  onPointerMove={e => {
+                    const dr = tabDragRef.current;
+                    if (!dr || dr.fromIdx !== i) return;
+                    const dx = Math.abs(e.clientX - dr.startX);
+                    if (dx > 8) {
+                      dr.moved = true;
+                      if (dr.timer) { clearTimeout(dr.timer); dr.timer = null; }
+                    }
+                    if (dr.moved) {
+                      // 드래그 중: 어느 탭 위에 있는지 계산
+                      const tabEls = (e.currentTarget as Element).closest('[data-tab-bar]')?.querySelectorAll('[data-tab-idx]');
+                      if (tabEls) {
+                        let over: number | null = null;
+                        tabEls.forEach(el => {
+                          const rect = el.getBoundingClientRect();
+                          if (e.clientX >= rect.left && e.clientX <= rect.right) over = Number((el as HTMLElement).dataset.tabIdx);
+                        });
+                        setDragOverTabIdx(over);
+                      }
+                    }
+                  }}
+                  onPointerUp={e => {
+                    const dr = tabDragRef.current;
+                    if (!dr) return;
+                    if (dr.timer) clearTimeout(dr.timer);
+                    if (dr.moved && dragOverTabIdx !== null && dragOverTabIdx !== dr.fromIdx) {
+                      onTabReorder?.(dr.fromIdx, dragOverTabIdx);
+                    } else if (!dr.longFired && !dr.moved) {
+                      onTabSwitch?.(i);
+                    }
+                    tabDragRef.current = null;
+                    setDragOverTabIdx(null);
+                  }}
+                  onPointerCancel={() => {
+                    if (tabDragRef.current?.timer) clearTimeout(tabDragRef.current.timer);
+                    tabDragRef.current = null;
+                    setDragOverTabIdx(null);
+                  }}
+                  data-tab-idx={i}>
                   {/* 제목 */}
                   <span className="max-w-[80px] truncate">{tab.title}</span>
                   {/* 닫기 */}
                   <button type="button"
                     className="ml-0.5 opacity-60 hover:opacity-100 cursor-pointer"
+                    onPointerDown={e => e.stopPropagation()}
                     onClick={e => { e.stopPropagation(); onTabClose?.(i); }}>
                     <X className="w-3 h-3"/>
                   </button>
@@ -2421,6 +2482,28 @@ export const PenCanvas: React.FC<Props> = ({
                 ))}
               </div>
             </div>
+            {/* 현재 탭 색상 */}
+            {openTabs && openTabs.length > 0 && (
+              <div>
+                <div className="text-[10px] font-black text-white/40 mb-1.5 uppercase tracking-wider">탭 색상</div>
+                <div className="flex gap-1.5 flex-wrap mb-1.5">
+                  {['#8b5cf6','#22c55e','#3b82f6','#f97316','#ec4899','#14b8a6','#ef4444','#eab308','#06b6d4','#64748b'].map(c => (
+                    <button key={c} type="button"
+                      onClick={() => onTabColorSet?.(activeTabIdxProp, c)}
+                      className={`w-6 h-6 rounded-full cursor-pointer border-2 transition-transform ${openTabs[activeTabIdxProp]?.color===c?'border-white scale-110':'border-transparent'}`}
+                      style={{background:c}}/>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input type="color"
+                    value={openTabs[activeTabIdxProp]?.color ?? '#8b5cf6'}
+                    onChange={e => onTabColorSet?.(activeTabIdxProp, e.target.value)}
+                    onPointerDown={e => e.stopPropagation()}
+                    className="w-8 h-8 rounded-lg cursor-pointer border border-white/20"/>
+                  <span className="text-[10px] text-white/40">직접 선택</span>
+                </div>
+              </div>
+            )}
             {/* 줄 표시 */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
@@ -2554,7 +2637,12 @@ export const PenCanvas: React.FC<Props> = ({
                 <div className="text-[9px] font-black text-white/40 uppercase tracking-wider px-1 mb-0.5">레이어</div>
                 {/* 활성 레이어 */}
                 <div className="flex items-center gap-1">
-                  <button type="button" onClick={() => { setActiveLayerHidden(v => { const nv=!v; redrawBase(); return nv; }) }}
+                  <button type="button" onClick={() => {
+                    const nv = !activeLayerHiddenRef.current;
+                    activeLayerHiddenRef.current = nv;
+                    setActiveLayerHidden(nv);
+                    requestAnimationFrame(() => redrawBase());
+                  }}
                     className="text-white/50 hover:text-white cursor-pointer shrink-0">
                     {activeLayerHidden ? <EyeOff className="w-3.5 h-3.5"/> : <Eye className="w-3.5 h-3.5 text-purple-400"/>}
                   </button>
@@ -2569,9 +2657,9 @@ export const PenCanvas: React.FC<Props> = ({
                     <button type="button"
                       onClick={() => {
                         const updated = otherLayersRef.current.map(ol => ol.id===l.id ? {...ol,hidden:!ol.hidden} : ol);
-                        setOtherLayers(updated);
                         otherLayersRef.current = updated;
-                        redrawBase();
+                        setOtherLayers(updated);
+                        requestAnimationFrame(() => redrawBase());
                       }}
                       className="text-white/50 hover:text-white cursor-pointer shrink-0">
                       {l.hidden ? <EyeOff className="w-3.5 h-3.5"/> : <Eye className="w-3.5 h-3.5 text-white/70"/>}

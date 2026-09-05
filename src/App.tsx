@@ -29,6 +29,7 @@ export default function App() {
     try { const s = localStorage.getItem('damoa_active_tab_idx'); return s ? parseInt(s, 10) : 0; } catch { return 0; }
   });
   const [tabEditIdx,  setTabEditIdx]  = useState<number | null>(null); // 탭 편집 팝업
+  const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null);
   const [isLocked,    setIsLocked]    = useState(() => localStorage.getItem(LOCK_KEY) === 'true');
   const [darkMode,    setDarkMode]    = useState(() => {
     const stored = localStorage.getItem('damoa_pen_dark');
@@ -53,6 +54,11 @@ export default function App() {
   // 탭 변경 시 localStorage에 저장
   useEffect(() => { localStorage.setItem('damoa_open_tabs', JSON.stringify(openTabs)); }, [openTabs]);
   useEffect(() => { localStorage.setItem('damoa_active_tab_idx', String(activeTabIdx)); }, [activeTabIdx]);
+
+  // PDF 파일 전달 후 즉시 클리어 (PenCanvas가 useEffect로 consume)
+  useEffect(() => {
+    if (pendingPdfFile) { const t = setTimeout(() => setPendingPdfFile(null), 600); return () => clearTimeout(t); }
+  }, [pendingPdfFile]);
 
   const loadNotes = useCallback(async () => {
     const all = await getAllNotes();
@@ -296,6 +302,32 @@ export default function App() {
 
   const handleNewTab = () => handleNew();
 
+  const handleTabReorder = (fromIdx: number, toIdx: number) => {
+    setOpenTabs(prev => {
+      const arr = [...prev];
+      const [moved] = arr.splice(fromIdx, 1);
+      arr.splice(toIdx, 0, moved);
+      return arr;
+    });
+    // activeTabIdx 조정
+    setActiveTabIdx(prev => {
+      if (prev === fromIdx) return toIdx;
+      if (fromIdx < toIdx && prev > fromIdx && prev <= toIdx) return prev - 1;
+      if (fromIdx > toIdx && prev >= toIdx && prev < fromIdx) return prev + 1;
+      return prev;
+    });
+  };
+
+  const handleOpenPdf = (file: File) => {
+    const color = TAB_PALETTE[openTabs.length % TAB_PALETTE.length];
+    const newIdx = openTabs.length;
+    setOpenTabs(prev => [...prev, { noteId: null, title: file.name.replace(/\.pdf$/i,''), color, pageIdx: 0 }]);
+    setActiveTabIdx(newIdx);
+    setEditingNote(null);
+    setPendingPdfFile(file);
+    setView('canvas');
+  };
+
   // ── 폴더 CRUD ─────────────────────────────────────────────────────────────
   const handleAddFolder = async () => {
     const name = newFolderName.trim();
@@ -445,6 +477,7 @@ export default function App() {
               notes={filteredNotes}
               folders={folders}
               onNew={handleNew}
+              onOpenPdf={handleOpenPdf}
               onEdit={handleEdit}
               onDelete={handleDelete}
               onTogglePin={handleTogglePin}
@@ -473,7 +506,9 @@ export default function App() {
             onTabTitleChange={handleTabTitleChange}
             onTabColorSet={handleTabColorSet}
             tabEditIdx={tabEditIdx}
+            onTabReorder={handleTabReorder}
             onNewTab={handleNewTab}
+            initialPdfFile={pendingPdfFile}
             onAutoSave={handleAutoSave}
             initialPageIdx={openTabs[activeTabIdx]?.pageIdx ?? 0}
             onPageChange={handlePageChange}

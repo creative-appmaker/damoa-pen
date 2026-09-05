@@ -1,6 +1,6 @@
 // ── 공유 타입 ─────────────────────────────────────────────────────────────────
 
-export type PenType = 'pen' | 'fountain' | 'highlighter';
+export type PenType = 'pen' | 'fountain' | 'highlighter' | 'penFountain';
 
 export interface StrokePoint {
   x: number;

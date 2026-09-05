@@ -75,15 +75,17 @@ const HL_COLORS = ['#fde047','#86efac','#93c5fd','#f9a8d4','#fdba74','#a5f3fc'];
 const QUICK_SIZES = [0.5, 1, 2, 3.5, 6, 10, 16, 20];
 
 const PEN_LABELS: Record<PenType, string> = {
-  pen:         '볼펜',
-  fountain:    '만년필',
-  highlighter: '형광펜',
+  pen:          '볼펜',
+  fountain:     '만년필',
+  highlighter:  '형광펜',
+  penFountain:  '볼펜+만년필',
 };
 
 const PEN_ICONS: Record<PenType, string> = {
-  pen:         '🖊️',
-  fountain:    '✒️',
-  highlighter: '🖍️',
+  pen:          '🖊️',
+  fountain:     '✒️',
+  highlighter:  '🖍️',
+  penFountain:  '🖊️✒️',
 };
 
 // ── Compress helper ──────────────────────────────────────────────────────────
@@ -128,6 +130,14 @@ function applyPenStyle(
     ctx.globalCompositeOperation = 'source-over';
     const p = Math.max(0.2, Math.min(pressure, 1));
     ctx.lineWidth   = Math.max(0.4, size * p * fountainIntensity);
+  } else if (penType === 'penFountain') {
+    // 볼펜+만년필: 볼펜 기반 + 미세 필압 (live 드로잉 / appendSegment 용)
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = color;
+    ctx.fillStyle   = color;
+    const p = Math.max(0.2, Math.min(pressure, 1));
+    ctx.lineWidth   = Math.max(0.4, size * (0.82 + p * 0.18));
+    ctx.globalCompositeOperation = 'source-over';
   } else {
     // ballpoint pen: uniform
     ctx.globalAlpha = 1;
@@ -190,6 +200,40 @@ function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
         const mx2 = (p1.x + p2.x) / 2, my2 = (p1.y + p2.y) / 2;
         ctx.moveTo(mx1, my1); ctx.quadraticCurveTo(p1.x, p1.y, mx2, my2);
       }
+      ctx.stroke();
+    }
+    resetCtxState(ctx); return;
+  }
+
+  if (stroke.penType === 'penFountain') {
+    // 볼펜+만년필: 세그먼트별 tapering + 미세 필압
+    const n = pts.length;
+    if (n === 1) {
+      ctx.globalAlpha = 1; ctx.fillStyle = stroke.color;
+      ctx.beginPath();
+      ctx.arc(pts[0].x, pts[0].y, Math.max(0.2, stroke.size / 2), 0, Math.PI * 2);
+      ctx.fill(); resetCtxState(ctx); return;
+    }
+    // taper 구간: 전체 포인트의 20%, 최소 2 최대 12
+    const taperLen = Math.max(2, Math.min(12, Math.floor(n * 0.2)));
+    for (let i = 0; i < n - 1; i++) {
+      const p1 = pts[i], p2 = pts[i + 1];
+      // 획 끝 tapering: 시작/끝 구간에서 가늘어짐 (sqrt로 자연스럽게)
+      const distFromEdge = Math.min(i + 1, n - 1 - i);
+      const taperFactor = Math.sqrt(Math.min(distFromEdge, taperLen) / taperLen);
+      // 미세 필압 (볼펜 기반 ±18%)
+      const avgP = (p1.pressure + p2.pressure) / 2;
+      const pressureFactor = 0.82 + Math.max(0.2, Math.min(avgP, 1)) * 0.18;
+      const width = Math.max(0.4, stroke.size * pressureFactor * taperFactor);
+
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = stroke.color;
+      ctx.lineWidth = width;
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
       ctx.stroke();
     }
     resetCtxState(ctx); return;
@@ -1739,7 +1783,7 @@ export const PenCanvas: React.FC<Props> = ({
             </button>
             {showPenMenu && (
               <div ref={penMenuRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-1.5 shadow-xl z-50 min-w-[160px] flex flex-col gap-1">
-                {(['pen','fountain','highlighter'] as PenType[]).map(pt => (
+                {(['pen','penFountain','fountain','highlighter'] as PenType[]).map(pt => (
                   <button key={pt} type="button"
                     onClick={() => { setPenType(pt); setIsEraser(false); setShowPenMenu(false); }}
                     className={`px-3 py-2 rounded-xl text-xs font-black text-left flex items-center gap-2 cursor-pointer ${penType===pt&&!isEraser?'bg-purple-600 text-white':'text-stone-800 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-800'}`}>

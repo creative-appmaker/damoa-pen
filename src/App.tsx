@@ -22,7 +22,7 @@ export default function App() {
   const hasRestoredTabsRef            = useRef(false);
 
   // ── 탭 시스템 (localStorage 영속) ────────────────────────────────────────
-  const [openTabs,    setOpenTabs]    = useState<Array<{noteId:string|null; title:string; color:string; pageIdx:number}>>(() => {
+  const [openTabs,    setOpenTabs]    = useState<Array<{noteId:string|null; title:string; color:string; pageIdx:number; zoom?:{scale:number;x:number;y:number}}>>(() => {
     try { const s = localStorage.getItem('damoa_open_tabs'); return s ? JSON.parse(s) : []; } catch { return []; }
   });
   const [activeTabIdx,setActiveTabIdx]= useState(() => {
@@ -312,6 +312,10 @@ export default function App() {
 
   const handleNewTab = () => handleNew();
 
+  const handleZoomChange = useCallback((zoom: {scale:number;x:number;y:number}) => {
+    setOpenTabs(prev => prev.map((t, i) => i === activeTabIdx ? { ...t, zoom } : t));
+  }, [activeTabIdx]);
+
   const handleTabReorder = (fromIdx: number, toIdx: number) => {
     setOpenTabs(prev => {
       const arr = [...prev];
@@ -521,6 +525,8 @@ export default function App() {
             initialPdfFile={pendingPdfFile}
             onAutoSave={handleAutoSave}
             initialPageIdx={openTabs[activeTabIdx]?.pageIdx ?? 0}
+            initialZoom={openTabs[activeTabIdx]?.zoom}
+            onZoomChange={handleZoomChange}
             onPageChange={handlePageChange}
             allNotes={notes}
             onMergePages={handleMergePages}

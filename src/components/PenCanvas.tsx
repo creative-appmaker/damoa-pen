@@ -62,6 +62,8 @@ interface Props {
   onTabReorder?: (fromIdx: number, toIdx: number) => void;
   onNewTab?: () => void;
   initialPdfFile?: File | null;
+  initialZoom?: { scale: number; x: number; y: number };
+  onZoomChange?: (zoom: { scale: number; x: number; y: number }) => void;
   onAutoSave?: (noteId: string | undefined, strokes: SavedStroke[][]) => void;
   initialPageIdx?: number;
   onPageChange?: (pageIdx: number) => void;
@@ -324,7 +326,7 @@ export const PenCanvas: React.FC<Props> = ({
   initialSearchQuery,
   openTabs, activeTabIdx: activeTabIdxProp = 0,
   onTabSwitch, onTabClose, onTabColorCycle, onTabEdit, onTabTitleChange, onTabColorSet, tabEditIdx, onTabReorder, onNewTab,
-  initialPdfFile,
+  initialPdfFile, initialZoom, onZoomChange,
   onAutoSave,
   initialPageIdx,
   onPageChange,
@@ -439,6 +441,12 @@ export const PenCanvas: React.FC<Props> = ({
   // ── 탭 드래그 정렬 ───────────────────────────────────────────────────────────
   const tabDragRef = useRef<{fromIdx:number;startX:number;moved:boolean;longFired:boolean;timer:ReturnType<typeof setTimeout>|null} | null>(null);
   const [dragOverTabIdx, setDragOverTabIdx] = useState<number|null>(null);
+  const [dragFromIdx,    setDragFromIdx]    = useState<number|null>(null);
+
+  // ── 페이지 전환 peek 캔버스 ──────────────────────────────────────────────────
+  const peekRightCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const peekLeftCanvasRef  = useRef<HTMLCanvasElement | null>(null);
+  const renderPeekCanvasRef = useRef<(side: 'left'|'right', idx: number) => void>(() => {});
 
   // ── 노트 커버 ─────────────────────────────────────────────────────────────
   const [noteCoverType,     setNoteCoverType]     = useState<'none'|'color'|'gradient'>(editingNote?.coverType ?? 'none');
@@ -690,6 +698,46 @@ export const PenCanvas: React.FC<Props> = ({
     redrawBase();
   }, [renderPdfPage, redrawBase]);
 
+  // ── 인접 페이지를 peek 캔버스에 미리 그리기 ─────────────────────────────────
+  const renderPeekCanvas = useCallback(async (side: 'left'|'right', targetIdx: number) => {
+    if (targetIdx < 0 || targetIdx >= pagesLenRef.current) return;
+    const canvas = side === 'left' ? peekLeftCanvasRef.current : peekRightCanvasRef.current;
+    const base = baseCanvasRef.current;
+    if (!canvas || !base || base.width < 10 || base.height < 10) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width  = base.width;
+    canvas.height = base.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const cssW = base.width / dpr, cssH = base.height / dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawBackground(ctx, cssW, cssH);
+    // PDF background
+    if (pdfDocRef.current) {
+      const bmp = await renderPdfPage(targetIdx);
+      if (bmp) {
+        const sc = Math.min(cssW / bmp.width, cssH / bmp.height);
+        const pw = bmp.width * sc, ph = bmp.height * sc;
+        ctx.drawImage(bmp, (cssW - pw) / 2, 0, pw, ph);
+      }
+    }
+    // Attached image
+    const imgDataUrl = pageImagesRef.current[targetIdx];
+    if (imgDataUrl) {
+      const img = new Image();
+      img.onload = () => {
+        if (!ctx) return;
+        const scale = Math.min(cssW / img.naturalWidth, cssH / img.naturalHeight);
+        const iw = img.naturalWidth * scale, ih = img.naturalHeight * scale;
+        ctx.drawImage(img, (cssW - iw) / 2, (cssH - ih) / 2, iw, ih);
+      };
+      img.src = imgDataUrl;
+    }
+    // Strokes
+    const pStrokes: Stroke[] = (live.current.pages[targetIdx]?.strokes ?? []) as Stroke[];
+    pStrokes.forEach(s => drawStroke(s, ctx));
+  }, [drawBackground, renderPdfPage]);
+
   // ── pdf.js 초기화 헬퍼 ─────────────────────────────────────────────────
   const initPdfJs = () => {
     const lib = (window as any).pdfjsLib;
@@ -885,10 +933,17 @@ export const PenCanvas: React.FC<Props> = ({
 
   useEffect(() => {
     initCanvas();
+    // 저장된 줌 복원 (탭 전환 / 목록→캔버스 복귀 시)
+    if (initialZoom && (initialZoom.scale !== 1 || initialZoom.x !== 0 || initialZoom.y !== 0)) {
+      canvasXformRef.current = initialZoom;
+      setCanvasXform(initialZoom);
+      if (initialZoom.scale > 1.05) setZoomLocked(true);
+    }
     const obs = new ResizeObserver(() => initCanvas());
     if (containerRef.current) obs.observe(containerRef.current);
     const t1 = setTimeout(initCanvas, 50), t2 = setTimeout(initCanvas, 300);
     return () => { obs.disconnect(); clearTimeout(t1); clearTimeout(t2); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initCanvas, pageIdx]);
 
   useEffect(() => { redrawBase(); }, [paperType, showLines, lineSpacing, redrawBase]);
@@ -996,6 +1051,7 @@ export const PenCanvas: React.FC<Props> = ({
           canvasXformRef.current = xform;
           setCanvasXform(xform);
           cachedRectRef.current = null; // 시각적 rect 변경 → 캐시 무효화
+          onZoomChange?.(xform);
         }
         e.preventDefault();
         return;
@@ -1013,6 +1069,12 @@ export const PenCanvas: React.FC<Props> = ({
         // 수평 지배면 스와이프 (좌우 양방향)
         sr.isSwipe = Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 10;
         sr.classified = true;
+        // 인접 페이지를 peek 캔버스에 미리 렌더 (blank flash 방지)
+        if (sr.isSwipe) {
+          const ci = live.current.pageIdx;
+          if (ci > 0)                       renderPeekCanvasRef.current('left',  ci - 1);
+          if (ci < pagesLenRef.current - 1) renderPeekCanvasRef.current('right', ci + 1);
+        }
       }
 
       if (sr.classified && sr.isSwipe) {
@@ -1108,6 +1170,13 @@ export const PenCanvas: React.FC<Props> = ({
         setSwipeHint('idle'); setSwipeProgress(0);
       }
       swipeTouchRef.current = null;
+      // peek 캔버스 초기화 (전환 완료 후)
+      setTimeout(() => {
+        [peekLeftCanvasRef, peekRightCanvasRef].forEach(ref => {
+          const c = ref.current;
+          if (c) { const ctx = c.getContext('2d'); ctx?.clearRect(0, 0, c.width, c.height); }
+        });
+      }, 250);
     };
 
     container.addEventListener('touchstart',  onTouchStart, { passive: true });
@@ -1765,6 +1834,7 @@ export const PenCanvas: React.FC<Props> = ({
     }, 150);
   };
   animatedGoToPageRef.current = animatedGoToPage;
+  renderPeekCanvasRef.current = renderPeekCanvas;
 
   // ── PDF 임포트 (원본 방식) ───────────────────────────────────────────────
   const importPdf = useCallback(async (file: File) => {
@@ -1873,6 +1943,7 @@ export const PenCanvas: React.FC<Props> = ({
               if (hitIdx === null) return;
               container.setPointerCapture(e.pointerId);
               tabDragRef.current = { fromIdx: hitIdx, startX: e.clientX, moved: false, longFired: false, timer: null };
+              setDragFromIdx(hitIdx);
             }}
             onPointerMove={e => {
               const dr = tabDragRef.current;
@@ -1904,20 +1975,32 @@ export const PenCanvas: React.FC<Props> = ({
               }
               tabDragRef.current = null;
               setDragOverTabIdx(null);
+              setDragFromIdx(null);
             }}
             onPointerCancel={() => {
               if (tabDragRef.current?.timer) clearTimeout(tabDragRef.current.timer);
               tabDragRef.current = null;
               setDragOverTabIdx(null);
+              setDragFromIdx(null);
             }}>
             {openTabs.map((tab, i) => (
-              <div key={i} className="relative shrink-0">
+              <div key={i} className="relative shrink-0 flex items-stretch">
+                {/* 드래그 삽입 위치 표시 — 왼쪽 */}
+                {dragFromIdx !== null && dragOverTabIdx === i && dragFromIdx > i && (
+                  <div style={{position:'absolute',left:0,top:0,bottom:0,width:3,background:'#60a5fa',borderRadius:2,zIndex:10}}/>
+                )}
                 <div
-                  className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold cursor-pointer border-b-2 transition-all select-none ${dragOverTabIdx===i&&tabDragRef.current?.fromIdx!==i?'opacity-50 scale-95':''}`}
+                  className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold cursor-pointer border-b-2 transition-all duration-150 select-none
+                    ${dragFromIdx === i ? 'opacity-30 scale-95' : ''}
+                    ${dragOverTabIdx === i && dragFromIdx !== null && dragFromIdx !== i ? 'ring-1 ring-blue-400 ring-inset' : ''}`}
                   style={i === activeTabIdxProp
                     ? { background: tab.color, borderColor: tab.color, color: tabTextColor(tab.color) }
                     : { background: tab.color + '33', borderColor: 'transparent', color: tab.color }}
                   data-tab-idx={i}>
+                {/* 드래그 삽입 위치 표시 — 오른쪽 */}
+                {dragFromIdx !== null && dragOverTabIdx === i && dragFromIdx < i && (
+                  <div style={{position:'absolute',right:0,top:0,bottom:0,width:3,background:'#60a5fa',borderRadius:2,zIndex:10}}/>
+                )}
                   {/* 제목 */}
                   <span className="max-w-[80px] truncate">{tab.title}</span>
                   {/* 닫기 */}
@@ -2032,7 +2115,11 @@ export const PenCanvas: React.FC<Props> = ({
                   const id = { scale: 1, x: 0, y: 0 };
                   canvasXformRef.current = id; setCanvasXform(id);
                   cachedRectRef.current = null;
-                } else { setZoomLocked(true); }
+                  onZoomChange?.(id);
+                } else {
+                  setZoomLocked(true);
+                  onZoomChange?.(canvasXformRef.current);
+                }
               }}
               className={`px-2 py-1.5 rounded-xl flex items-center gap-1 cursor-pointer shrink-0 border ${zoomLocked?'bg-amber-500/25 border-amber-400/50 text-amber-300':'bg-white/10 border-white/15 text-white/50'}`}>
               {zoomLocked ? <Lock className="w-3.5 h-3.5"/> : <Unlock className="w-3.5 h-3.5"/>}
@@ -2408,12 +2495,14 @@ export const PenCanvas: React.FC<Props> = ({
                 if (!zoomLocked && canvasXformRef.current.scale > 1.05) {
                   // 줌 상태로 종료 → 자동 잠금 (고정 유지)
                   setZoomLocked(true);
+                  onZoomChange?.(canvasXformRef.current);
                 } else if (!zoomLocked) {
                   // scale ≈ 1이면 리셋
                   const id = { scale: 1, x: 0, y: 0 };
                   canvasXformRef.current = id;
                   setCanvasXform(id);
                   cachedRectRef.current = null;
+                  onZoomChange?.(id);
                 }
               }
               setZoomEnabled(z => !z);
@@ -2630,70 +2719,6 @@ export const PenCanvas: React.FC<Props> = ({
           </div>
         )}
 
-        {/* Row 2.7: 개요 패널 */}
-        {showOutlinePanel && (
-          <div className="mt-1 border-t border-white/10 pt-2 flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <div className="text-[10px] font-black text-white/40 uppercase tracking-wider flex items-center gap-1">
-                <BookOpen className="w-3 h-3"/> 개요 (목차)
-              </div>
-              <span className="text-[10px] text-white/30">{outline.length}개</span>
-            </div>
-            {/* 기존 개요 항목 */}
-            {outline.length > 0 && (
-              <div className="flex flex-col gap-1 max-h-32 overflow-y-auto pr-1">
-                {outline.map((item, idx) => (
-                  <div key={idx} className="flex items-center gap-1.5">
-                    <button type="button"
-                      onClick={() => animatedGoToPageRef.current?.(item.pageIdx)}
-                      className="flex-1 flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-left cursor-pointer active:scale-95">
-                      <span className="text-[10px] font-black text-purple-300 shrink-0">{item.pageIdx + 1}p</span>
-                      <span className="text-[11px] text-white/80 truncate">{item.label}</span>
-                    </button>
-                    <button type="button"
-                      onClick={() => setOutline(prev => prev.filter((_, i) => i !== idx))}
-                      className="shrink-0 text-white/30 hover:text-red-400 cursor-pointer p-1">
-                      <X className="w-3 h-3"/>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* 현재 페이지에 개요 추가 */}
-            <div className="flex items-center gap-1.5">
-              <input
-                value={newOutlineLabel}
-                onChange={e => setNewOutlineLabel(e.target.value)}
-                placeholder={`${pageIdx + 1}p 개요 제목...`}
-                className="flex-1 text-xs bg-white/10 text-white rounded-xl px-2.5 py-1.5 outline-none placeholder-white/30 border border-white/10 focus:border-purple-400"
-                style={{touchAction:'auto'}}
-                onPointerDown={e => e.stopPropagation()}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && newOutlineLabel.trim()) {
-                    setOutline(prev => {
-                      const next = prev.filter(o => o.pageIdx !== pageIdx);
-                      return [...next, {label: newOutlineLabel.trim(), pageIdx}].sort((a,b)=>a.pageIdx-b.pageIdx);
-                    });
-                    setNewOutlineLabel('');
-                  }
-                }}
-              />
-              <button type="button"
-                onClick={() => {
-                  if (!newOutlineLabel.trim()) return;
-                  setOutline(prev => {
-                    const next = prev.filter(o => o.pageIdx !== pageIdx);
-                    return [...next, {label: newOutlineLabel.trim(), pageIdx}].sort((a,b)=>a.pageIdx-b.pageIdx);
-                  });
-                  setNewOutlineLabel('');
-                }}
-                className="shrink-0 px-2.5 py-1.5 rounded-xl bg-purple-600 text-white text-xs font-black cursor-pointer active:scale-95">
-                추가
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Row 3: 태그 / 폴더 (토글) */}
         {showNoteInfo && (
           <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-stone-200 dark:border-slate-700">
@@ -2757,6 +2782,16 @@ export const PenCanvas: React.FC<Props> = ({
           transform: `translateX(${slideOffset}%)`,
           transition: slideActive ? 'transform 0.15s ease-out' : 'none',
         }}>
+          {/* 이전 페이지 peek (왼쪽) */}
+          <canvas ref={peekLeftCanvasRef} style={{
+            position: 'absolute', top: 0, right: '100%', width: '100%', height: '100%',
+            pointerEvents: 'none',
+          }}/>
+          {/* 다음 페이지 peek (오른쪽) */}
+          <canvas ref={peekRightCanvasRef} style={{
+            position: 'absolute', top: 0, left: '100%', width: '100%', height: '100%',
+            pointerEvents: 'none',
+          }}/>
         {/* 줌/패닝 wrapper — CSS transform으로 확대/축소 처리, 캔버스 자체 해상도는 불변 */}
         <div ref={canvasWrapRef} className="absolute inset-0"
           style={{
@@ -2790,6 +2825,76 @@ export const PenCanvas: React.FC<Props> = ({
           )}
         </div>
         </div>{/* /페이지 전환 슬라이드 wrapper */}
+
+        {/* ── 개요 플로팅 패널 (우측 슬라이드) ── */}
+        <div className="absolute right-0 top-0 bottom-0 z-20 pointer-events-none">
+          <div style={{
+            position:'absolute', right:0, top:'50%',
+            transform: showOutlinePanel ? 'translate(0,-50%)' : 'translate(100%,-50%)',
+            transition:'transform 0.25s cubic-bezier(0.4,0,0.2,1)',
+            width:200, maxHeight:'70vh',
+            pointerEvents: showOutlinePanel ? 'auto' : 'none',
+            backdropFilter:'blur(10px)',
+          }}
+            className="bg-stone-900/95 border border-white/15 border-r-0 rounded-l-2xl shadow-2xl flex flex-col"
+            onClick={e => e.stopPropagation()}
+            onPointerDown={e => e.stopPropagation()}>
+            {/* 헤더 */}
+            <div className="flex items-center justify-between px-3 pt-3 pb-1.5 border-b border-white/10">
+              <div className="text-[10px] font-black text-white/50 uppercase tracking-wider flex items-center gap-1.5">
+                <BookOpen className="w-3 h-3 text-blue-400"/> 개요
+              </div>
+              <span className="text-[10px] text-white/30">{outline.length}개</span>
+            </div>
+            {/* 항목 목록 */}
+            <div className="flex flex-col gap-0.5 overflow-y-auto p-2 flex-1" style={{touchAction:'auto'}}>
+              {outline.length === 0 && (
+                <div className="text-[10px] text-white/25 text-center py-3">개요 없음</div>
+              )}
+              {outline.map((item, idx) => (
+                <div key={idx} className="flex items-center gap-1">
+                  <button type="button"
+                    onClick={() => animatedGoToPageRef.current?.(item.pageIdx)}
+                    className="flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-white/8 hover:bg-white/15 text-left cursor-pointer active:scale-95">
+                    <span className="text-[9px] font-black text-blue-400 shrink-0 tabular-nums">{item.pageIdx+1}p</span>
+                    <span className="text-[10px] text-white/80 truncate">{item.label}</span>
+                  </button>
+                  <button type="button"
+                    onClick={() => setOutline(prev => prev.filter((_,i) => i !== idx))}
+                    className="shrink-0 text-white/20 hover:text-red-400 cursor-pointer p-1 rounded">
+                    <X className="w-2.5 h-2.5"/>
+                  </button>
+                </div>
+              ))}
+            </div>
+            {/* 추가 입력 */}
+            <div className="p-2 border-t border-white/10 flex flex-col gap-1.5">
+              <input
+                value={newOutlineLabel}
+                onChange={e => setNewOutlineLabel(e.target.value)}
+                placeholder={`${pageIdx+1}p 제목...`}
+                className="w-full text-[11px] bg-white/8 text-white rounded-lg px-2.5 py-1.5 border border-white/10 focus:border-blue-400 placeholder-white/25"
+                style={{touchAction:'auto', outline:'none'}}
+                onPointerDown={e => e.stopPropagation()}
+                onKeyDown={e => {
+                  if (e.key==='Enter' && newOutlineLabel.trim()) {
+                    setOutline(prev => [...prev.filter(o=>o.pageIdx!==pageIdx), {label:newOutlineLabel.trim(),pageIdx}].sort((a,b)=>a.pageIdx-b.pageIdx));
+                    setNewOutlineLabel('');
+                  }
+                }}
+              />
+              <button type="button"
+                onClick={() => {
+                  if (!newOutlineLabel.trim()) return;
+                  setOutline(prev => [...prev.filter(o=>o.pageIdx!==pageIdx), {label:newOutlineLabel.trim(),pageIdx}].sort((a,b)=>a.pageIdx-b.pageIdx));
+                  setNewOutlineLabel('');
+                }}
+                className="w-full py-1.5 rounded-lg bg-blue-600/80 hover:bg-blue-600 text-white text-[11px] font-black cursor-pointer active:scale-95">
+                현재 페이지 추가
+              </button>
+            </div>
+          </div>
+        </div>
 
         {/* ── PDF 레이어 사이드 패널 ── */}
         {pdfBase64 && (

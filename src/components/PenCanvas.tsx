@@ -4,7 +4,7 @@ import {
   Hand, ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
   FileText, FolderOpen, Tag, Lock, Unlock, Settings, X, Plus,
   Undo2, Redo2, Search, Image as ImageIcon, Heart, Layers, Eye, EyeOff,
-  MoreHorizontal, BookOpen, Palette,
+  MoreHorizontal, BookOpen, Palette, ScanText, Loader2,
 } from 'lucide-react';
 import { PenNote, Folder, PenType, StrokePoint, SavedStroke, PenSettings, WordBox, PenLayer } from '../types';
 
@@ -1655,119 +1655,141 @@ export const PenCanvas: React.FC<Props> = ({
     setActiveLayerName(name);
   }, []);
 
-  // ── Save ─────────────────────────────────────────────────────────────────
-  const handleSave = async () => {
+  // ── 공통: 스트로크·썸네일·레이어 수집 ────────────────────────────────────
+  const collectSavePayload = async () => {
     let rawUrl = getExportDataUrl();
     if (!rawUrl) {
-      // 내보내기 실패 시 기존 이미지 유지 (노트 비어버리는 에러 방지)
       if (editingNote?.dataUrl) {
         console.warn('[damoa-pen] 내보내기 실패 — 기존 이미지 유지');
         rawUrl = editingNote.dataUrl;
       } else {
-        return; // 신규 노트인데 내보내기 실패면 저장 안 함
+        return null;
       }
     }
     const dataUrl = await compress(rawUrl, 1200, 0.75);
     if (!dataUrl || dataUrl.length < 200) {
       console.error('[damoa-pen] compress 결과 비어있음, 저장 중단');
-      return;
+      return null;
     }
-    // 전체 페이지 스트로크 수집 (현재 페이지는 strokesRef로 최신화)
     const allPageStrokes = pages.map((p, i) =>
       i === live.current.pageIdx ? [...strokesRef.current] : p.strokes
     ) as SavedStroke[][];
 
-    // PDF 레이어 데이터 수집
     let penLayersToSave: PenLayer[] | undefined;
     let activeLayerIdToSave: string | undefined;
     if (pdfBase64) {
-      const activeLyr: PenLayer = {
-        id:   activeLayerIdRef.current,
-        name: activeLayerNameRef.current,
-        pageStrokes: allPageStrokes,
-      };
-      const otherLyrs: PenLayer[] = otherLayersRef.current.map(l => ({
-        id:   l.id,
-        name: l.name,
-        pageStrokes: l.pageStrokes as SavedStroke[][],
-      }));
+      const activeLyr: PenLayer = { id: activeLayerIdRef.current, name: activeLayerNameRef.current, pageStrokes: allPageStrokes };
+      const otherLyrs: PenLayer[] = otherLayersRef.current.map(l => ({ id: l.id, name: l.name, pageStrokes: l.pageStrokes as SavedStroke[][] }));
       penLayersToSave     = [activeLyr, ...otherLyrs];
       activeLayerIdToSave = activeLayerIdRef.current;
     }
-
-    // ── 전체 페이지 OCR (Cloud Vision) ──────────────────────────────────────
-    const visionApiKey = localStorage.getItem('damoa_vision_api_key') ?? '';
-    const pageOcrTexts: string[] = [];
-    const pageWordBoxes: WordBox[][] = [];
     const canvasW = containerRef.current?.clientWidth  || 1200;
     const canvasH = containerRef.current?.clientHeight || 1600;
+    return { dataUrl, allPageStrokes, penLayersToSave, activeLayerIdToSave, canvasW, canvasH };
+  };
 
-    if (visionApiKey) {
-      setIsOcrLoading(true);
-      const { extractHandwritingImage, runCloudVisionOcrFull } = await import('../lib/inkOcr');
-      const SCALE = 2;
+  // ── Save (OCR 없음 — 빠른 저장) ──────────────────────────────────────────
+  const handleSave = async () => {
+    const payload = await collectSavePayload();
+    if (!payload) return;
+    const { dataUrl, allPageStrokes, penLayersToSave, activeLayerIdToSave, canvasW, canvasH } = payload;
 
-      for (let pi = 0; pi < allPageStrokes.length; pi++) {
-        const pgStrokes = allPageStrokes[pi];
-        const existingText = editingNote?.pageOcrTexts?.[pi] ?? '';
-        const existingBoxes = editingNote?.pageWordBoxes?.[pi] ?? [];
-        const shouldRecognize = pgStrokes.length > 0 && (pi === live.current.pageIdx || !existingText);
-        if (!shouldRecognize) {
-          pageOcrTexts.push(existingText);
-          pageWordBoxes.push(existingBoxes);
-          continue;
-        }
-        try {
-          setOcrMsg(`🌐 페이지 ${pi + 1}/${allPageStrokes.length} 인식 중...`);
-          const imgBase64 = extractHandwritingImage(pgStrokes as any, canvasW, canvasH, SCALE);
-          const { text, wordBoxes: wb } = await runCloudVisionOcrFull(imgBase64, visionApiKey, SCALE, canvasW, canvasH);
-          pageOcrTexts.push(text || existingText);
-          pageWordBoxes.push(wb.map(b => ({ text: b.text, x: b.xFrac, y: b.yFrac, w: b.wFrac, h: b.hFrac })));
-        } catch (e) {
-          console.warn('[damoa-pen] Cloud Vision 실패:', e);
-          pageOcrTexts.push(existingText);
-          pageWordBoxes.push(existingBoxes);
-        }
-      }
-      setIsOcrLoading(false);
-      const preview = pageOcrTexts.find(t => t?.trim())?.slice(0, 60) ?? '';
-      setOcrMsg(preview ? `✅ 인식 완료: "${preview}${preview.length >= 60 ? '...' : ''}"` : null);
-    } else {
-      // API 키 없으면 기존 텍스트/박스 유지
-      for (let pi = 0; pi < allPageStrokes.length; pi++) {
-        pageOcrTexts.push(editingNote?.pageOcrTexts?.[pi] ?? '');
-        pageWordBoxes.push(editingNote?.pageWordBoxes?.[pi] ?? []);
-      }
-    }
+    // 기존 OCR 결과 그대로 유지
+    const pageOcrTexts = (editingNote?.pageOcrTexts ?? []);
+    const pageWordBoxes = (editingNote?.pageWordBoxes ?? []);
+    const finalOcr = pageOcrTexts.filter(Boolean).join(' ') || ocrText;
 
-    // 전체 OCR 텍스트 = 페이지별 합산 (검색용)
-    const finalOcr = pageOcrTexts.filter(Boolean).join(' ');
-    setOcrText(finalOcr);
-
-    // 태그 파싱
     const finalTags = tagsInput.split(',').map(t => t.trim()).filter(Boolean);
     if (finalTags.length) setTags(finalTags);
-    // 현재 펜 설정 수집
     const currentPenSettings: PenSettings = {
-      penType:          live.current.penType,
-      penSize:          live.current.penSize,
-      penColor:         live.current.penColor,
-      fountainIntensity:live.current.fountainIntensity,
+      penType: live.current.penType, penSize: live.current.penSize,
+      penColor: live.current.penColor, fountainIntensity: live.current.fountainIntensity,
     };
-    const currentPageImages = pageImagesRef.current;
     onSave(
       dataUrl, finalOcr, title, live.current.paperType,
       finalTags, noteFolderId,
       pdfBase64, pdfText, pdfPageCount,
       allPageStrokes.some(s => s.length > 0) ? allPageStrokes : undefined,
       currentPenSettings,
-      currentPageImages.some(Boolean) ? currentPageImages : undefined,
+      pageImagesRef.current.some(Boolean) ? pageImagesRef.current : undefined,
       editingNote?.id,
       pageOcrTexts.some(Boolean) ? pageOcrTexts : undefined,
       pageWordBoxes.some(b => b.length > 0) ? pageWordBoxes : undefined,
       pageWordBoxes.some(b => b.length > 0) ? { w: canvasW, h: canvasH } : undefined,
-      penLayersToSave,
-      activeLayerIdToSave,
+      penLayersToSave, activeLayerIdToSave,
+      {
+        coverType:     noteCoverType !== 'none' ? noteCoverType : undefined,
+        coverColor:    noteCoverType === 'color'    ? noteCoverColor    : undefined,
+        coverGradient: noteCoverType === 'gradient' ? noteCoverGradient : undefined,
+        outline:       outline.length > 0 ? outline : undefined,
+      },
+    );
+  };
+
+  // ── OCR 인식 후 저장 (사용자가 직접 호출) ────────────────────────────────
+  const handleOcrAndSave = async () => {
+    const visionApiKey = localStorage.getItem('damoa_vision_api_key') ?? '';
+    if (!visionApiKey) {
+      setOcrMsg('⚠️ 설정에서 Vision API 키를 입력해주세요');
+      return;
+    }
+    const payload = await collectSavePayload();
+    if (!payload) return;
+    const { dataUrl, allPageStrokes, penLayersToSave, activeLayerIdToSave, canvasW, canvasH } = payload;
+
+    // ── 전체 페이지 OCR ──────────────────────────────────────────────────────
+    setIsOcrLoading(true);
+    const { extractHandwritingImage, runCloudVisionOcrFull } = await import('../lib/inkOcr');
+    const SCALE = 2;
+    const pageOcrTexts: string[] = [];
+    const pageWordBoxes: WordBox[][] = [];
+
+    for (let pi = 0; pi < allPageStrokes.length; pi++) {
+      const pgStrokes = allPageStrokes[pi];
+      const existingText  = editingNote?.pageOcrTexts?.[pi]  ?? '';
+      const existingBoxes = editingNote?.pageWordBoxes?.[pi] ?? [];
+      if (pgStrokes.length === 0) {
+        pageOcrTexts.push(existingText);
+        pageWordBoxes.push(existingBoxes);
+        continue;
+      }
+      try {
+        setOcrMsg(`🌐 페이지 ${pi + 1}/${allPageStrokes.length} 인식 중...`);
+        const imgBase64 = extractHandwritingImage(pgStrokes as any, canvasW, canvasH, SCALE);
+        const { text, wordBoxes: wb } = await runCloudVisionOcrFull(imgBase64, visionApiKey, SCALE, canvasW, canvasH);
+        pageOcrTexts.push(text || existingText);
+        pageWordBoxes.push(wb.map(b => ({ text: b.text, x: b.xFrac, y: b.yFrac, w: b.wFrac, h: b.hFrac })));
+      } catch (e) {
+        console.warn('[damoa-pen] Cloud Vision 실패:', e);
+        pageOcrTexts.push(existingText);
+        pageWordBoxes.push(existingBoxes);
+      }
+    }
+    setIsOcrLoading(false);
+    const preview = pageOcrTexts.find(t => t?.trim())?.slice(0, 60) ?? '';
+    setOcrMsg(preview ? `✅ 인식 완료: "${preview}${preview.length >= 60 ? '...' : ''}"` : '✅ 인식 완료');
+
+    const finalOcr = pageOcrTexts.filter(Boolean).join(' ');
+    setOcrText(finalOcr);
+
+    const finalTags = tagsInput.split(',').map(t => t.trim()).filter(Boolean);
+    if (finalTags.length) setTags(finalTags);
+    const currentPenSettings: PenSettings = {
+      penType: live.current.penType, penSize: live.current.penSize,
+      penColor: live.current.penColor, fountainIntensity: live.current.fountainIntensity,
+    };
+    onSave(
+      dataUrl, finalOcr, title, live.current.paperType,
+      finalTags, noteFolderId,
+      pdfBase64, pdfText, pdfPageCount,
+      allPageStrokes.some(s => s.length > 0) ? allPageStrokes : undefined,
+      currentPenSettings,
+      pageImagesRef.current.some(Boolean) ? pageImagesRef.current : undefined,
+      editingNote?.id,
+      pageOcrTexts.some(Boolean) ? pageOcrTexts : undefined,
+      pageWordBoxes.some(b => b.length > 0) ? pageWordBoxes : undefined,
+      pageWordBoxes.some(b => b.length > 0) ? { w: canvasW, h: canvasH } : undefined,
+      penLayersToSave, activeLayerIdToSave,
       {
         coverType:     noteCoverType !== 'none' ? noteCoverType : undefined,
         coverColor:    noteCoverType === 'color'    ? noteCoverColor    : undefined,
@@ -2212,7 +2234,18 @@ export const PenCanvas: React.FC<Props> = ({
 
         {/* Row 1: back / title / page nav / collapse / save */}
         <div className="flex items-center gap-1.5">
-          <button type="button" onClick={onBack}
+          <button type="button" onClick={() => {
+            // 목록으로 나가기 전 pending 자동저장 즉시 flush
+            if (autoSaveTimerRef.current && onAutoSave && live.current.editingNoteId) {
+              clearTimeout(autoSaveTimerRef.current);
+              autoSaveTimerRef.current = undefined;
+              const allStrokes = live.current.pages.map((pg: any, i: number) =>
+                i === live.current.pageIdx ? [...strokesRef.current] : [...pg.strokes]
+              );
+              void onAutoSave(live.current.editingNoteId, allStrokes);
+            }
+            onBack();
+          }}
             className="px-2 py-1 bg-white/10 border border-white/15 rounded-lg font-black text-xs flex items-center gap-1 text-white/75 cursor-pointer hover:bg-white/15">
             <ChevronLeft className="w-3.5 h-3.5 text-purple-400"/>
             <span className="hidden sm:inline">목록</span>
@@ -2284,6 +2317,21 @@ export const PenCanvas: React.FC<Props> = ({
             className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-black text-xs px-3.5 py-1.5 rounded-xl flex items-center gap-1 shadow-md cursor-pointer active:scale-95">
             <Check className="w-4 h-4"/><span>저장</span>
           </button>
+
+          {/* OCR 인식 버튼 — API 키가 있을 때만 표시 */}
+          {localStorage.getItem('damoa_vision_api_key') && (
+            <button type="button"
+              onClick={handleOcrAndSave}
+              disabled={isOcrLoading}
+              title="손글씨 텍스트 인식 후 저장"
+              className={`bg-white/10 border border-white/15 text-white/60 font-black text-xs px-2 py-1.5 rounded-xl flex items-center gap-1 cursor-pointer active:scale-95 shrink-0
+                ${isOcrLoading ? 'opacity-40 cursor-not-allowed' : 'hover:bg-white/15 hover:text-white/90'}`}>
+              {isOcrLoading
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin"/>
+                : <ScanText className="w-3.5 h-3.5"/>}
+              <span>인식</span>
+            </button>
+          )}
         </div>
 
         {/* Row 2: pen tools (flat icon-only) */}

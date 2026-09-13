@@ -438,10 +438,22 @@ export const PenCanvas: React.FC<Props> = ({
   const [activeLayerHidden, setActiveLayerHidden] = useState(false);
   const [showLayerPanel,  setShowLayerPanel]  = useState(false);
 
-  // ── 탭 드래그 정렬 ───────────────────────────────────────────────────────────
-  const tabDragRef = useRef<{fromIdx:number;startX:number;moved:boolean;longFired:boolean;timer:ReturnType<typeof setTimeout>|null} | null>(null);
-  const [dragOverTabIdx, setDragOverTabIdx] = useState<number|null>(null);
-  const [dragFromIdx,    setDragFromIdx]    = useState<number|null>(null);
+  // ── 탭 드래그 / 스크롤 ──────────────────────────────────────────────────────
+  const tabBarRef = useRef<HTMLDivElement | null>(null);
+  const tabDragRef = useRef<{
+    phase: 'pending'|'scrolling'|'dragging';
+    fromIdx: number;
+    startX: number;
+    lastX: number;
+    startScrollLeft: number;
+    timer: ReturnType<typeof setTimeout>|null;
+    ghostWidth: number;
+  } | null>(null);
+  const [tabDragGhost, setTabDragGhost] = useState<{
+    fromIdx: number;
+    ghostX: number;    // 컨테이너 왼쪽 기준 px
+    insertBefore: number; // 0..N, 삽입 위치
+  } | null>(null);
 
   // ── 페이지 전환 peek 캔버스 ──────────────────────────────────────────────────
   const peekRightCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -1928,81 +1940,205 @@ export const PenCanvas: React.FC<Props> = ({
       {/* ── 탭 바 ── */}
       {openTabs && openTabs.length > 0 && (
         <div className="relative">
-          <div className="flex items-center bg-stone-200 dark:bg-slate-900 border-b border-stone-300 dark:border-slate-700 overflow-x-hidden"
+          <div
+            ref={tabBarRef}
+            className="flex items-center bg-stone-200 dark:bg-slate-900 border-b border-stone-300 dark:border-slate-700 overflow-x-scroll"
             data-tab-bar="1"
-            style={{touchAction:'none', scrollbarWidth:'none', userSelect:'none'}}
+            style={{
+              touchAction: 'none',
+              scrollbarWidth: 'none',
+              userSelect: 'none',
+              position: 'relative',
+              WebkitOverflowScrolling: 'touch',
+            } as React.CSSProperties}
             onPointerDown={e => {
-              const container = e.currentTarget as HTMLDivElement;
+              const container = tabBarRef.current;
+              if (!container) return;
+              // 히트 탭 인덱스 찾기
               const tabEls = container.querySelectorAll('[data-tab-idx]');
               let hitIdx: number | null = null;
+              let ghostWidth = 80;
               tabEls.forEach(el => {
                 const rect = el.getBoundingClientRect();
                 if (e.clientX >= rect.left && e.clientX <= rect.right &&
                     e.clientY >= rect.top  && e.clientY <= rect.bottom) {
                   hitIdx = Number((el as HTMLElement).dataset.tabIdx);
+                  ghostWidth = rect.width;
                 }
               });
               if (hitIdx === null) return;
               container.setPointerCapture(e.pointerId);
-              tabDragRef.current = { fromIdx: hitIdx, startX: e.clientX, moved: false, longFired: false, timer: null };
-              setDragFromIdx(hitIdx);
+              // 400ms 길게 누르면 드래그 모드
+              const fi = hitIdx;
+              const gw = ghostWidth;
+              const timer = setTimeout(() => {
+                const dr = tabDragRef.current;
+                if (!dr || dr.phase !== 'pending') return;
+                dr.phase = 'dragging';
+                setTabDragGhost({ fromIdx: dr.fromIdx, ghostX: dr.lastX - container.getBoundingClientRect().left + container.scrollLeft, insertBefore: dr.fromIdx });
+              }, 400);
+              tabDragRef.current = {
+                phase: 'pending',
+                fromIdx: fi,
+                startX: e.clientX,
+                lastX: e.clientX,
+                startScrollLeft: container.scrollLeft,
+                timer,
+                ghostWidth: gw,
+              };
             }}
             onPointerMove={e => {
               const dr = tabDragRef.current;
               if (!dr) return;
-              const dx = Math.abs(e.clientX - dr.startX);
-              if (dx > 8) {
-                dr.moved = true;
-                if (dr.timer) { clearTimeout(dr.timer); dr.timer = null; }
+              const dx = e.clientX - dr.startX;
+              const container = tabBarRef.current;
+              if (!container) return;
+
+              if (dr.phase === 'pending') {
+                // 6px 넘게 움직이면 스크롤 모드
+                if (Math.abs(dx) > 6) {
+                  if (dr.timer) { clearTimeout(dr.timer); dr.timer = null; }
+                  dr.phase = 'scrolling';
+                }
               }
-              if (dr.moved) {
-                const container = e.currentTarget as HTMLDivElement;
+
+              if (dr.phase === 'scrolling') {
+                container.scrollLeft = dr.startScrollLeft - dx;
+              }
+
+              if (dr.phase === 'dragging') {
+                dr.lastX = e.clientX;
+                const containerRect = container.getBoundingClientRect();
+                const ghostX = e.clientX - containerRect.left + container.scrollLeft;
+                // 삽입 위치 계산: 포인터 오른쪽에 있는 탭 중 가장 작은 idx
                 const tabEls = container.querySelectorAll('[data-tab-idx]');
-                let over: number | null = null;
+                let insertBefore = openTabs.length;
                 tabEls.forEach(el => {
                   const rect = el.getBoundingClientRect();
-                  if (e.clientX >= rect.left && e.clientX <= rect.right) over = Number((el as HTMLElement).dataset.tabIdx);
+                  const mid = rect.left + rect.width / 2;
+                  const idx = Number((el as HTMLElement).dataset.tabIdx);
+                  // 포인터가 이 탭 중앙보다 왼쪽이면 → 이 탭 앞에 삽입 가능
+                  if (e.clientX < mid && idx < insertBefore) insertBefore = idx;
                 });
-                setDragOverTabIdx(over);
+                setTabDragGhost(prev => prev ? { ...prev, ghostX, insertBefore } : null);
               }
             }}
             onPointerUp={e => {
               const dr = tabDragRef.current;
               if (!dr) return;
               if (dr.timer) clearTimeout(dr.timer);
-              if (dr.moved && dragOverTabIdx !== null && dragOverTabIdx !== dr.fromIdx) {
-                onTabReorder?.(dr.fromIdx, dragOverTabIdx);
-              } else if (!dr.moved) {
+
+              if (dr.phase === 'pending') {
+                // 탭 전환 (짧은 탭)
                 onTabSwitch?.(dr.fromIdx);
+              } else if (dr.phase === 'dragging') {
+                // 드래그 완료 → 재정렬
+                // state updater 밖에서 side effect 처리
+                const ghost = tabDragGhost;
+                setTabDragGhost(null);
+                if (ghost) {
+                  let target = ghost.insertBefore;
+                  // insertBefore > fromIdx: 실제 타겟은 target-1
+                  if (target > ghost.fromIdx) target = target - 1;
+                  if (target !== ghost.fromIdx) onTabReorder?.(ghost.fromIdx, target);
+                }
               }
               tabDragRef.current = null;
-              setDragOverTabIdx(null);
-              setDragFromIdx(null);
             }}
             onPointerCancel={() => {
               if (tabDragRef.current?.timer) clearTimeout(tabDragRef.current.timer);
               tabDragRef.current = null;
-              setDragOverTabIdx(null);
-              setDragFromIdx(null);
+              setTabDragGhost(null);
             }}>
-            {openTabs.map((tab, i) => (
-              <div key={i} className="relative shrink-0 flex items-stretch">
-                {/* 드래그 삽입 위치 표시 — 왼쪽 */}
-                {dragFromIdx !== null && dragOverTabIdx === i && dragFromIdx > i && (
-                  <div style={{position:'absolute',left:0,top:0,bottom:0,width:3,background:'#60a5fa',borderRadius:2,zIndex:10}}/>
-                )}
+            {/* 고스트 탭: 드래그 중 포인터를 따라다님 */}
+            {tabDragGhost && tabDragRef.current && (() => {
+              const ghost = tabDragGhost;
+              const tab = openTabs[ghost.fromIdx];
+              const gw = tabDragRef.current.ghostWidth;
+              return (
+                <div style={{
+                  position: 'absolute',
+                  top: 2,
+                  bottom: 2,
+                  left: Math.max(0, ghost.ghostX - gw / 2),
+                  width: gw,
+                  pointerEvents: 'none',
+                  zIndex: 50,
+                  transform: 'scale(1.06) translateY(-2px)',
+                  boxShadow: '0 4px 18px rgba(0,0,0,0.28)',
+                  background: tab.color,
+                  borderRadius: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  padding: '0 10px',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: tabTextColor(tab.color),
+                  overflow: 'hidden',
+                }}>
+                  <span style={{maxWidth: 80, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+                    {tab.title}
+                  </span>
+                </div>
+              );
+            })()}
+
+            {/* 삽입 위치 표시 라인 */}
+            {tabDragGhost && (() => {
+              const { insertBefore } = tabDragGhost;
+              if (!tabBarRef.current) return null;
+              const tabEls = tabBarRef.current.querySelectorAll('[data-tab-idx]');
+              let lineX = 0;
+              if (insertBefore < tabEls.length) {
+                const el = tabEls[insertBefore] as HTMLElement;
+                const containerRect = tabBarRef.current.getBoundingClientRect();
+                lineX = el.getBoundingClientRect().left - containerRect.left + tabBarRef.current.scrollLeft - 1;
+              } else if (tabEls.length > 0) {
+                const el = tabEls[tabEls.length - 1] as HTMLElement;
+                const containerRect = tabBarRef.current.getBoundingClientRect();
+                lineX = el.getBoundingClientRect().right - containerRect.left + tabBarRef.current.scrollLeft + 1;
+              }
+              return (
+                <div style={{
+                  position: 'absolute',
+                  top: 2, bottom: 2,
+                  left: lineX,
+                  width: 3,
+                  background: '#60a5fa',
+                  borderRadius: 2,
+                  pointerEvents: 'none',
+                  zIndex: 40,
+                  boxShadow: '0 0 6px #60a5fa',
+                }}/>
+              );
+            })()}
+
+            {openTabs.map((tab, i) => {
+              // 드래그 중 다른 탭들이 옆으로 비켜나는 shift 계산
+              let shift = '';
+              if (tabDragGhost) {
+                const { fromIdx, insertBefore } = tabDragGhost;
+                const gw = tabDragRef.current?.ghostWidth ?? 80;
+                if (i !== fromIdx) {
+                  // fromIdx 탭이 insertBefore 앞으로 이동: fromIdx+1 ~ insertBefore-1 탭들이 왼쪽으로
+                  if (fromIdx < insertBefore && i > fromIdx && i < insertBefore) shift = `translateX(-${gw}px)`;
+                  // fromIdx 탭이 insertBefore 뒤로 이동: insertBefore ~ fromIdx-1 탭들이 오른쪽으로
+                  if (fromIdx >= insertBefore && i >= insertBefore && i < fromIdx) shift = `translateX(${gw}px)`;
+                }
+              }
+              return (
+              <div key={i} className="relative shrink-0 flex items-stretch"
+                style={{ transform: shift, transition: shift ? 'transform 0.15s ease' : 'transform 0.15s ease' }}>
                 <div
-                  className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold cursor-pointer border-b-2 transition-all duration-150 select-none
-                    ${dragFromIdx === i ? 'opacity-30 scale-95' : ''}
-                    ${dragOverTabIdx === i && dragFromIdx !== null && dragFromIdx !== i ? 'ring-1 ring-blue-400 ring-inset' : ''}`}
-                  style={i === activeTabIdxProp
-                    ? { background: tab.color, borderColor: tab.color, color: tabTextColor(tab.color) }
-                    : { background: tab.color + '33', borderColor: 'transparent', color: tab.color }}
+                  className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold cursor-pointer border-b-2 select-none
+                    ${tabDragGhost?.fromIdx === i ? 'opacity-25 scale-95' : ''}`}
+                  style={{
+                    ...(i === activeTabIdxProp
+                      ? { background: tab.color, borderColor: tab.color, color: tabTextColor(tab.color) }
+                      : { background: tab.color + '33', borderColor: 'transparent', color: tab.color }),
+                    transition: 'opacity 0.15s, transform 0.15s',
+                  }}
                   data-tab-idx={i}>
-                {/* 드래그 삽입 위치 표시 — 오른쪽 */}
-                {dragFromIdx !== null && dragOverTabIdx === i && dragFromIdx < i && (
-                  <div style={{position:'absolute',right:0,top:0,bottom:0,width:3,background:'#60a5fa',borderRadius:2,zIndex:10}}/>
-                )}
                   {/* 제목 */}
                   <span className="max-w-[80px] truncate">{tab.title}</span>
                   {/* 닫기 */}
@@ -2057,7 +2193,8 @@ export const PenCanvas: React.FC<Props> = ({
                   </div>
                 )}
               </div>
-            ))}
+            );
+          })}
             {/* 새 탭 */}
             <button type="button" title="새 노트 탭"
               onClick={onNewTab}

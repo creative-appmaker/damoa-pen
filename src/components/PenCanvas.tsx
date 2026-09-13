@@ -1357,18 +1357,23 @@ export const PenCanvas: React.FC<Props> = ({
         if (!(stroke.penType === 'highlighter' && stroke.points.length <= 2)) {
           stroke = { ...stroke, points: laplacianSmooth(stroke.points, 2) };
         }
-        // undo history push
+        // undo history push (최대 30개 유지)
         const _pid = pages[ci]?.id;
         if (_pid) {
           const _h = undoHistoriesRef.current.get(_pid) ?? [];
-          undoHistoriesRef.current.set(_pid, [..._h, [...strokesRef.current]]);
+          const _trimmed = _h.length >= 30 ? _h.slice(-29) : _h;
+          undoHistoriesRef.current.set(_pid, [..._trimmed, [...strokesRef.current]]);
           redoHistoriesRef.current.delete(_pid);
         }
         strokesRef.current.push(stroke);
         setPages(prev => prev.map((pg, i) => i === ci ? { ...pg, strokes: [...strokesRef.current] } : pg));
         currentStrokeRef.current = null;
-        // 후처리 스무딩이 적용된 최종 획을 base canvas에 반영
-        redrawBase();
+        // 후처리 스무딩이 적용된 새 획만 base canvas에 증분 추가
+        // (redrawBase() 대신 → O(P_new), 획 수에 무관하게 일정 속도 유지)
+        // 레이어가 숨겨진 경우 base에 그리지 않음 (redrawBase와 동일한 가드)
+        const base = baseCanvasRef.current;
+        if (base && !activeLayerHiddenRef.current) drawStroke(stroke, base.getContext('2d')!);
+        clearActive();
         // 자동 저장 (탭 전환 시 손글씨 유지) — 1.5초 디바운스
         if (onAutoSave) {
           clearTimeout(autoSaveTimerRef.current);
@@ -1379,9 +1384,6 @@ export const PenCanvas: React.FC<Props> = ({
             onAutoSave(live.current.editingNoteId, allStrokes);
           }, 1500);
         }
-        const base = baseCanvasRef.current;
-        if (base) drawStroke(stroke, base.getContext('2d')!);
-        clearActive();
       }
       if (live.current.isEraser && arp) setIsEraser(false);
     };

@@ -879,45 +879,48 @@ export const PenCanvas: React.FC<Props> = ({
       const startPage = Math.min(initialPageIdx ?? 0, count - 1);
       const prefetchEnd = Math.min(5, count);
 
-      // ── 네이티브 경로 우선 시도 (Android) ──────────────────────────────────
-      const { isNativePdfAvailable, openNativePdf } = await import('../lib/pdfNative');
-      if (isNativePdfAvailable()) {
-        try {
-          await openNativePdf(editingNote.pdfBase64);
-          nativePdfReadyRef.current = true;
-          await loadPageBg(startPage);
-          // 백그라운드 미리 렌더
-          for (let i = 0; i < prefetchEnd; i++) {
-            if (i === startPage) continue;
-            setPdfRenderMsg(`PDF 미리 렌더 ${i + 1}/${count}...`);
-            await renderPdfPage(i);
-          }
-          setPdfRenderMsg(null);
-          return; // 네이티브 성공 → pdf.js 건너뜀
-        } catch (e) {
-          console.warn('[damoa-pen] 네이티브 PDF 초기화 실패, pdf.js 폴백:', e);
-          nativePdfReadyRef.current = false;
-        }
-      }
-
-      // ── pdf.js 폴백 (웹 / 네이티브 불가 시) ────────────────────────────────
-      const pdfjsLib = initPdfJs();
-      if (pdfjsLib) {
-        const binary = atob(editingNote.pdfBase64);
-        const bytes  = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        pdfjsLib.getDocument({ data: bytes.buffer }).promise
-          .then(async (pdf: any) => {
-            pdfDocRef.current = pdf;
+      // ── 비동기 PDF 렌더 (async IIFE — useEffect 콜백은 sync이므로) ───────────
+      (async () => {
+        // 네이티브 경로 우선 시도 (Android)
+        const { isNativePdfAvailable, openNativePdf } = await import('../lib/pdfNative');
+        if (isNativePdfAvailable()) {
+          try {
+            await openNativePdf(editingNote.pdfBase64);
+            nativePdfReadyRef.current = true;
             await loadPageBg(startPage);
-            for (let i = 1; i < prefetchEnd; i++) {
-              setPdfRenderMsg(`PDF 미리 렌더 ${i+1}/${count}...`);
+            // 백그라운드 미리 렌더
+            for (let i = 0; i < prefetchEnd; i++) {
+              if (i === startPage) continue;
+              setPdfRenderMsg(`PDF 미리 렌더 ${i + 1}/${count}...`);
               await renderPdfPage(i);
             }
             setPdfRenderMsg(null);
-          })
-          .catch((e: Error) => console.error('[damoa-pen] PDF 로드 실패:', e));
-      }
+            return; // 네이티브 성공 → pdf.js 건너뜀
+          } catch (e) {
+            console.warn('[damoa-pen] 네이티브 PDF 초기화 실패, pdf.js 폴백:', e);
+            nativePdfReadyRef.current = false;
+          }
+        }
+
+        // pdf.js 폴백 (웹 / 네이티브 불가 시)
+        const pdfjsLib = initPdfJs();
+        if (pdfjsLib) {
+          const binary = atob(editingNote.pdfBase64);
+          const bytes  = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          pdfjsLib.getDocument({ data: bytes.buffer }).promise
+            .then(async (pdf: any) => {
+              pdfDocRef.current = pdf;
+              await loadPageBg(startPage);
+              for (let i = 1; i < prefetchEnd; i++) {
+                setPdfRenderMsg(`PDF 미리 렌더 ${i+1}/${count}...`);
+                await renderPdfPage(i);
+              }
+              setPdfRenderMsg(null);
+            })
+            .catch((e: Error) => console.error('[damoa-pen] PDF 로드 실패:', e));
+        }
+      })();
     } else {
       // ── 일반 손글씨 노트 ──
       setPdfBase64(undefined); setPdfText(undefined); setPdfPageCount(undefined);

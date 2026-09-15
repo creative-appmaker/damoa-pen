@@ -1954,7 +1954,7 @@ export const PenCanvas: React.FC<Props> = ({
     pageTransitioning.current = true;
     const dir = idx > live.current.pageIdx ? 1 : -1; // 1 = 다음, -1 = 이전
 
-    // 현재 페이지 슬라이드 아웃 (0.26s와 타이밍 맞춤)
+    // 현재 페이지 슬라이드 아웃
     setSlideActive(true);
     setSlideOffset(dir * -100);
 
@@ -1970,10 +1970,10 @@ export const PenCanvas: React.FC<Props> = ({
           setTimeout(() => {
             pageTransitioning.current = false;
             setSlideActive(false);
-          }, 260);
+          }, 180);
         });
       });
-    }, 180);
+    }, 130);
   };
   animatedGoToPageRef.current = animatedGoToPage;
   renderPeekCanvasRef.current = renderPeekCanvas;
@@ -3095,8 +3095,12 @@ export const PenCanvas: React.FC<Props> = ({
         {/* 페이지 전환 슬라이드 wrapper */}
         <div style={{
           position: 'absolute', inset: 0,
-          transform: `translateX(${slideOffset}%)`,
-          transition: slideActive ? 'transform 0.26s cubic-bezier(0.35,0,0.25,1)' : 'none',
+          transform: `translateX(${slideOffset}%) scale(${slideActive && slideOffset === 0 ? 1 : slideActive ? 0.97 : 1})`,
+          opacity: slideActive && slideOffset !== 0 ? 0.75 : 1,
+          transition: slideActive
+            ? 'transform 0.18s cubic-bezier(0.35,0,0.25,1), opacity 0.18s cubic-bezier(0.35,0,0.25,1)'
+            : 'none',
+          willChange: slideActive ? 'transform, opacity' : 'auto',
         }}>
           {/* 이전 페이지 peek (왼쪽) */}
           <canvas ref={peekLeftCanvasRef} style={{

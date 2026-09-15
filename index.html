@@ -10,6 +10,16 @@
     <meta http-equiv="Expires" content="0" />
     <title>다모아 펜</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <style>
+      @keyframes damoaSlideUp {
+        from { opacity: 0; transform: translateX(-50%) translateY(16px); }
+        to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+      }
+      @keyframes damoaFadeOut {
+        from { opacity: 1; }
+        to   { opacity: 0; }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

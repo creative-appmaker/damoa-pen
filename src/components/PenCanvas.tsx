@@ -73,7 +73,9 @@ interface Props {
 }
 
 // 페이지 데이터 (bgImageUrl 제거 — PDF는 pdfDocRef + 메모리 캐시로 처리)
-interface Page { id: string; strokes: Stroke[]; }
+// pdfPageIdx: PDF 노트에서 이 페이지가 대응하는 PDF 원본 페이지 인덱스 (0-based).
+//             undefined = 삽입된 빈 페이지 또는 일반 손글씨 페이지
+interface Page { id: string; strokes: Stroke[]; pdfPageIdx?: number; }
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const COLOR_PALETTE = [
@@ -407,7 +409,7 @@ export const PenCanvas: React.FC<Props> = ({
   const [locatingSearch,   setLocatingSearch]   = useState(false);
 
   const swipeTouchRef          = useRef<{ id: number; startX: number; startY: number; startTime: number; classified: boolean; isSwipe: boolean } | null>(null);
-  const addPageRef             = useRef<() => void>(() => {});
+  const addPageRef             = useRef<(insertAfterIdx?: number) => void>(() => {});
   const goToPageRef            = useRef<(idx: number) => void>(() => {});
   const animatedGoToPageRef    = useRef<(idx: number) => void>(() => {});
   const locateSearchTermRef    = useRef<(query: string, pageIdxOverride?: number) => void>(() => {});
@@ -474,9 +476,15 @@ export const PenCanvas: React.FC<Props> = ({
   // ── 형광펜 설정 ───────────────────────────────────────────────────────────
   const [showHlMenu,       setShowHlMenu]       = useState(false);
   const [hlOpacity,        setHlOpacity]        = useState(0.38);
-  const [hlStraight,       setHlStraight]       = useState(false);
+  const [hlStraight,       setHlStraight]       = useState(true); // 기본값: 직선 모드
+  const [hlAngle,          setHlAngle]          = useState<number|null>(null); // 드로잉 중 각도(°)
   const hlStartRef = useRef<Point|null>(null);
   const [canvasXform, setCanvasXform] = useState({ scale: 1, x: 0, y: 0 });
+
+  // ── 페이지 피커 / 새 페이지 toast ─────────────────────────────────────────
+  const [showPagePicker,   setShowPagePicker]   = useState(false);
+  const [newPageToast,     setNewPageToast]     = useState(false);
+  const newPageToastTimer  = useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
 
   const colorPickerRef = useRef<HTMLDivElement | null>(null);
   const sizePickerRef  = useRef<HTMLDivElement | null>(null);
@@ -499,7 +507,7 @@ export const PenCanvas: React.FC<Props> = ({
     pageIdx: 0, autoReturnPen: true,
     paperType: initPT as 'white'|'yellow'|'black', showLines: true, lineSpacing: 30,
     zoomEnabled: false,
-    hlOpacity: 0.38, hlStraight: false,
+    hlOpacity: 0.38, hlStraight: true,
     pages: [] as Page[],
     editingNoteId: undefined as string | undefined,
     editingNote:   null as PenNote | null,
@@ -729,9 +737,17 @@ export const PenCanvas: React.FC<Props> = ({
     }
   }, []); // 의존성 없음 — ref만 사용
 
-  /** 페이지 idx를 렌더해서 캔버스 배경으로 표시 */
+  /** 페이지 idx를 렌더해서 캔버스 배경으로 표시
+   * PDF 노트: pages[idx].pdfPageIdx 가 있으면 해당 PDF 원본 페이지 렌더,
+   *           없으면 (삽입된 빈 페이지) → 흰 배경 */
   const loadPageBg = useCallback(async (idx: number) => {
-    const bmp = await renderPdfPage(idx);
+    const pg = live.current.pages[idx];
+    if (pg && pg.pdfPageIdx === undefined && live.current.pages.some(p => p.pdfPageIdx !== undefined)) {
+      // PDF 노트 안의 삽입 빈 페이지 → PDF 배경 없음
+      pageBgImageRef.current = null; redrawBase(); return;
+    }
+    const pdfIdx = (pg?.pdfPageIdx !== undefined) ? pg.pdfPageIdx : idx;
+    const bmp = await renderPdfPage(pdfIdx);
     if (!bmp) { pageBgImageRef.current = null; redrawBase(); return; }
     pageBgImageRef.current = bmp;
     redrawBase();
@@ -827,6 +843,7 @@ export const PenCanvas: React.FC<Props> = ({
         const restored: Page[] = Array.from({ length: count }, (_, i) => ({
           id: `p-pdf-${i+1}`,
           strokes: ((activeLayer.pageStrokes ?? [])[i] ?? []) as Stroke[],
+          pdfPageIdx: i,
         }));
         setOtherLayers(restoredOthers);
         otherLayersRef.current = restoredOthers;
@@ -843,6 +860,7 @@ export const PenCanvas: React.FC<Props> = ({
         const restored: Page[] = Array.from({ length: count }, (_, i) => ({
           id: `p-pdf-${i+1}`,
           strokes: (editingNote.pageStrokes?.[i] ?? []) as Stroke[],
+          pdfPageIdx: i,
         }));
         setOtherLayers([]);
         otherLayersRef.current = [];
@@ -1378,10 +1396,12 @@ export const PenCanvas: React.FC<Props> = ({
           if (ac) {
             const ctx = ac.getContext('2d')!;
             ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,ac.width,ac.height); ctx.restore();
-            const previewStroke = { ...currentStrokeRef.current, points: [hlStartRef.current, p] };
             appendSegment(ctx, { color: pc, size: ps, penType: pt, fountainIntensity: fi, opacity: live.current.hlOpacity } as Stroke, [hlStartRef.current, p]);
-            void previewStroke;
           }
+          // 각도 계산 (0° = 수평, 90° = 수직)
+          const dx2 = p.x - hlStartRef.current.x, dy2 = p.y - hlStartRef.current.y;
+          const rawDeg = Math.atan2(Math.abs(dy2), Math.abs(dx2)) * 180 / Math.PI;
+          setHlAngle(Math.round(rawDeg));
           continue;
         }
 
@@ -1409,6 +1429,8 @@ export const PenCanvas: React.FC<Props> = ({
       try { target.releasePointerCapture(e.pointerId); } catch {}
       if (currentStrokeRef.current) {
         let stroke = currentStrokeRef.current;
+        // 형광펜 직선: 각도 HUD 숨기기
+        setHlAngle(null);
         // 형광펜 직선: 시작점→끝점 2포인트만 저장
         if (stroke.penType === 'highlighter' && hlStartRef.current && stroke.points.length > 0) {
           const rect2 = cachedRectRef.current || target.getBoundingClientRect();
@@ -1875,16 +1897,32 @@ export const PenCanvas: React.FC<Props> = ({
     }
     clearActive();
   };
-  const addPage = () => {
-    // 햅틱 피드백 (새 페이지 추가 확인)
-    try { navigator.vibrate?.(40); } catch {}
-    try { (window as any).Capacitor?.Plugins?.Haptics?.impact({ style: 'MEDIUM' }); } catch {}
-    const newPg = { id: `p-${pages.length+1}`, strokes: [] as Stroke[] };
-    const updated = [...pages, newPg]; setPages(updated);
-    const ni = updated.length - 1; setPageIdx(ni);
+  /** 새 페이지 추가.
+   * @param insertAfterIdx 삽입 위치. 지정 시 해당 페이지 다음에, 미지정 시 맨 끝에 추가. */
+  const addPage = (insertAfterIdx?: number) => {
+    // ── 햅틱 피드백 강화 ──
+    try { navigator.vibrate?.([20, 40, 80]); } catch {}
+    try { (window as any).Capacitor?.Plugins?.Haptics?.impact({ style: 'HEAVY' }); } catch {}
+
+    const insertAt = insertAfterIdx !== undefined ? insertAfterIdx + 1 : pages.length;
+    const newPg: Page = { id: `p-${Date.now()}-${Math.random()}`, strokes: [] };
+    // pdfPageIdx는 undefined → 삽입 빈 페이지로 인식됨
+    const updated = [...pages.slice(0, insertAt), newPg, ...pages.slice(insertAt)];
+    setPages(updated);
+    setPageImages(prev => {
+      const arr = [...prev];
+      arr.splice(insertAt, 0, undefined);
+      return arr;
+    });
+    setPageIdx(insertAt);
     strokesRef.current = []; baseImageRef.current = null;
-    pageUserImgRef.current = null; // 새 페이지는 사진 없음
+    pageUserImgRef.current = null;
     redrawBase(); clearActive();
+
+    // ── 새 페이지 toast ──
+    if (newPageToastTimer.current) clearTimeout(newPageToastTimer.current);
+    setNewPageToast(true);
+    newPageToastTimer.current = setTimeout(() => setNewPageToast(false), 1800);
   };
   addPageRef.current          = addPage;
   goToPageRef.current         = goToPage;
@@ -1970,9 +2008,9 @@ export const PenCanvas: React.FC<Props> = ({
           .join(' ') + '\n';
       }
 
-      // ④ 빈 페이지 구조 설정
+      // ④ 빈 페이지 구조 설정 (pdfPageIdx: PDF 원본 페이지 인덱스)
       const newPages: Page[] = Array.from({ length: pdf.numPages }, (_, i) => ({
-        id: `p-pdf-${i + 1}`, strokes: [],
+        id: `p-pdf-${i + 1}`, strokes: [], pdfPageIdx: i,
       }));
       setPages(newPages);
       setPageIdx(0);
@@ -2335,10 +2373,21 @@ export const PenCanvas: React.FC<Props> = ({
               className="p-0.5 disabled:opacity-30 hover:bg-white/10 rounded cursor-pointer">
               <ChevronLeft className="w-3.5 h-3.5 text-purple-400"/>
             </button>
-            <span className="text-[11px] font-black text-white/80">{pageIdx+1}/{pages.length}</span>
+            {/* 탭 → 페이지 피커 오픈 */}
+            <button type="button"
+              onClick={() => setShowPagePicker(v => !v)}
+              className="text-[11px] font-black text-white/80 px-1 hover:text-white cursor-pointer rounded hover:bg-white/10">
+              {pageIdx+1}/{pages.length}
+            </button>
             <button type="button" onClick={() => pageIdx<pages.length-1?animatedGoToPage(pageIdx+1):addPage()}
               className="p-0.5 hover:bg-white/10 rounded cursor-pointer">
               <ChevronRight className="w-3.5 h-3.5 text-purple-400"/>
+            </button>
+            {/* 현재 페이지 다음에 빈 페이지 삽입 */}
+            <button type="button" title="현재 페이지 다음에 빈 페이지 삽입"
+              onClick={() => addPage(pageIdx)}
+              className="p-0.5 hover:bg-white/10 rounded cursor-pointer ml-0.5">
+              <Plus className="w-3 h-3 text-white/50 hover:text-white/90"/>
             </button>
           </div>
 
@@ -3320,6 +3369,102 @@ export const PenCanvas: React.FC<Props> = ({
                 style={{background: mergeSelPages.length > 0 && mergeTargetNote ? 'rgba(124,58,237,0.9)' : undefined, color:'#fff'}}>
                 {mergeLoading ? '이동 중...' : `${mergeSelPages.length}페이지 이동`}
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── 형광펜 직선 각도 HUD ──────────────────────────────────────────── */}
+        {hlAngle !== null && hlStraight && (
+          <div className="absolute top-16 left-1/2 pointer-events-none"
+            style={{transform:'translateX(-50%)', zIndex:60}}>
+            <div className={`flex flex-col items-center gap-1 px-3 py-1.5 rounded-2xl shadow-lg backdrop-blur-sm
+              ${hlAngle <= 5 || hlAngle >= 85
+                ? 'bg-green-500/85 text-white'
+                : 'bg-black/70 text-white/90'}`}>
+              <div className="flex items-center gap-1.5">
+                {/* 수평 기준선 */}
+                <div className="w-8 h-px bg-current opacity-60"/>
+                <span className="text-sm font-black tabular-nums">{hlAngle}°</span>
+                <div className="w-8 h-px bg-current opacity-60"/>
+              </div>
+              {hlAngle <= 5 && <span className="text-[10px] font-bold opacity-90">수평</span>}
+              {hlAngle >= 85 && <span className="text-[10px] font-bold opacity-90">수직</span>}
+            </div>
+          </div>
+        )}
+
+        {/* ── 새 페이지 추가 toast ──────────────────────────────────────────── */}
+        {newPageToast && (
+          <div className="absolute bottom-16 left-1/2 pointer-events-none"
+            style={{transform:'translateX(-50%)', zIndex:70,
+              animation:'damoaSlideUp 0.25s ease-out, damoaFadeOut 0.4s ease-in 1.3s forwards'}}>
+            <div className="flex items-center gap-2 px-4 py-2.5 rounded-2xl shadow-xl"
+              style={{background:'rgba(124,58,237,0.92)', backdropFilter:'blur(8px)'}}>
+              <Plus className="w-4 h-4 text-white"/>
+              <span className="text-sm font-black text-white">새 페이지 추가됨</span>
+              <span className="text-xs text-white/70 font-bold">{pageIdx+1}/{pages.length}</span>
+            </div>
+          </div>
+        )}
+
+        {/* ── 페이지 피커 오버레이 ──────────────────────────────────────────── */}
+        {showPagePicker && (
+          <div className="absolute inset-0 z-50 flex items-end justify-center pb-20"
+            onClick={() => setShowPagePicker(false)}>
+            <div className="w-full max-w-lg mx-4" onClick={e => e.stopPropagation()}>
+              <div className="rounded-2xl overflow-hidden shadow-2xl"
+                style={{background:'rgba(20,15,35,0.97)', backdropFilter:'blur(16px)',
+                  border:'1px solid rgba(255,255,255,0.1)'}}>
+                {/* 헤더 */}
+                <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+                  <span className="text-white font-black text-sm">페이지 이동</span>
+                  <div className="flex items-center gap-2">
+                    <button type="button"
+                      onClick={() => { addPage(pageIdx); setShowPagePicker(false); }}
+                      className="flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-lg cursor-pointer
+                        bg-purple-600/50 text-purple-200 hover:bg-purple-600/80">
+                      <Plus className="w-3 h-3"/> 현재 페이지 뒤에 추가
+                    </button>
+                    <button type="button" onClick={() => setShowPagePicker(false)}
+                      className="text-white/40 hover:text-white p-1 cursor-pointer">
+                      <X className="w-4 h-4"/>
+                    </button>
+                  </div>
+                </div>
+                {/* 그리드 */}
+                <div className="p-3 overflow-y-auto" style={{maxHeight:'40vh'}}>
+                  <div className="grid gap-1.5" style={{gridTemplateColumns:'repeat(auto-fill, minmax(52px, 1fr))'}}>
+                    {pages.map((pg, i) => (
+                      <button key={pg.id} type="button"
+                        onClick={() => { animatedGoToPageRef.current(i); setShowPagePicker(false); }}
+                        className={`relative rounded-xl py-2 px-1 text-xs font-black cursor-pointer transition-all
+                          ${i === pageIdx
+                            ? 'bg-purple-600 text-white shadow-lg scale-105'
+                            : 'bg-white/8 text-white/60 hover:bg-white/15 hover:text-white'}`}>
+                        {/* PDF 페이지 배지 */}
+                        {pg.pdfPageIdx !== undefined
+                          ? <span className="block text-center leading-tight">{i+1}<br/>
+                              <span className="text-[8px] opacity-60 font-normal">PDF</span></span>
+                          : <span className="block text-center">{i+1}<br/>
+                              <span className="text-[8px] opacity-50 font-normal">빈 페이지</span></span>
+                        }
+                        {pg.strokes.length > 0 && (
+                          <div className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-blue-400"/>
+                        )}
+                      </button>
+                    ))}
+                    {/* + 새 페이지 버튼 */}
+                    <button type="button"
+                      onClick={() => { addPage(); setShowPagePicker(false); }}
+                      className="rounded-xl py-2 px-1 text-xs font-black cursor-pointer
+                        border-2 border-dashed border-white/20 text-white/30
+                        hover:border-purple-400/60 hover:text-purple-300 transition-all">
+                      <Plus className="w-4 h-4 mx-auto mb-0.5"/>
+                      <span className="text-[9px]">추가</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}

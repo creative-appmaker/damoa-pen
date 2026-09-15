@@ -25,8 +25,17 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Android SDK licenses
+        # android-actions/setup-android@v3 은 삭제된 'tools' 패키지 설치 시도로 실패함.
+        # ubuntu-latest runner에는 Android SDK가 이미 설치되어 있으므로 라이선스만 수락.
+        run: |
+          SDKMANAGER="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -f "$SDKMANAGER" ]; then
+            SDKMANAGER=$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager 2>/dev/null | head -1)
+          fi
+          echo "sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses || true
+          yes | "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
 
       - name: Install web dependencies
         run: npm install

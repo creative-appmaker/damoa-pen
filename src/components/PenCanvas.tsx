@@ -676,9 +676,9 @@ export const PenCanvas: React.FC<Props> = ({
     const container = containerRef.current;
     const cssW = container?.clientWidth  || 800;
     const cssH = container?.clientHeight || 600;
-    // 실효 렌더 스케일: DPR × 줌 배율, 최대 4× (메모리 보호)
+    // 실효 렌더 스케일: DPR × 줌 배율, 최대 6× (메모리 보호)
     const dpr         = Math.min(window.devicePixelRatio || 1, 3);
-    const renderScale = Math.min(extraScale, 4);
+    const renderScale = Math.min(extraScale, 6);
 
     // ── 네이티브 경로 (Android PdfRenderer) ─────────────────────────────────
     if (nativePdfReadyRef.current) {
@@ -1039,7 +1039,7 @@ export const PenCanvas: React.FC<Props> = ({
     const zoom = canvasXform.scale;
     pdfZoomRerenderTimer.current = setTimeout(() => {
       // 1x 이하로 돌아오면 기본 캐시 버전 복원 (extraScale=1)
-      const extraScale = Math.max(1, Math.min(4, zoom));
+      const extraScale = Math.max(1, Math.min(6, zoom));
       loadPageBg(live.current.pageIdx, extraScale);
     }, zoom <= 1.05 ? 0 : 200); // 줌 해제는 즉시, 확대는 200ms 디바운스
     return () => { if (pdfZoomRerenderTimer.current) clearTimeout(pdfZoomRerenderTimer.current); };
@@ -3095,7 +3095,7 @@ export const PenCanvas: React.FC<Props> = ({
         {/* 페이지 전환 슬라이드 wrapper */}
         <div style={{
           position: 'absolute', inset: 0,
-          transform: `translateX(${slideOffset}%) scale(${slideActive && slideOffset === 0 ? 1 : slideActive ? 0.97 : 1})`,
+          transform: `translateX(${slideOffset}%)`,
           opacity: slideActive && slideOffset !== 0 ? 0.75 : 1,
           transition: slideActive
             ? 'transform 0.18s cubic-bezier(0.35,0,0.25,1), opacity 0.18s cubic-bezier(0.35,0,0.25,1)'

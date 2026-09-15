@@ -478,6 +478,7 @@ export const PenCanvas: React.FC<Props> = ({
   const [hlOpacity,        setHlOpacity]        = useState(0.38);
   const [hlStraight,       setHlStraight]       = useState(true); // 기본값: 직선 모드
   const [hlAngle,          setHlAngle]          = useState<number|null>(null); // 드로잉 중 각도(°)
+  const [hlPenScreen,      setHlPenScreen]      = useState<{x:number;y:number}|null>(null); // 펜 화면 좌표
   const hlStartRef = useRef<Point|null>(null);
   const [canvasXform, setCanvasXform] = useState({ scale: 1, x: 0, y: 0 });
 
@@ -485,6 +486,8 @@ export const PenCanvas: React.FC<Props> = ({
   const [showPagePicker,   setShowPagePicker]   = useState(false);
   const [newPageToast,     setNewPageToast]     = useState(false);
   const newPageToastTimer  = useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
+
+  const pdfZoomRerenderTimer = useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
 
   const colorPickerRef = useRef<HTMLDivElement | null>(null);
   const sizePickerRef  = useRef<HTMLDivElement | null>(null);
@@ -656,38 +659,43 @@ export const PenCanvas: React.FC<Props> = ({
 
   /**
    * 페이지 인덱스(0-based)를 ImageBitmap으로 렌더. LRU 메모리 캐시 우선.
-   * JPEG 인코딩 없이 GPU-backed ImageBitmap으로 캐시 → 화질 무손실.
-   * 렌더 스케일 = DPR (물리 픽셀 1:1) — 최대 2.5배 제한.
+   * @param idx        PDF 원본 페이지 인덱스 (0-based)
+   * @param extraScale 줌 배율에 맞는 추가 스케일 (기본 1). 1보다 크면 고해상도 렌더 → 캐시 미사용.
    */
-  const renderPdfPage = useCallback(async (idx: number): Promise<ImageBitmap | null> => {
-    // 1. LRU 캐시 확인 — Map은 삽입 순서 유지 → 오래된 것이 앞
+  const renderPdfPage = useCallback(async (idx: number, extraScale = 1): Promise<ImageBitmap | null> => {
     const cache = pdfCacheRef.current;
-    if (cache.has(idx)) {
-      // LRU 갱신: 삭제 후 재삽입
-      const hit = cache.get(idx)!;
-      cache.delete(idx);
-      cache.set(idx, hit);
-      return hit;
+    // LRU 캐시: 기본 스케일(extraScale=1)만 캐시. 줌 버전은 매번 새로 렌더.
+    if (extraScale <= 1) {
+      if (cache.has(idx)) {
+        const hit = cache.get(idx)!;
+        cache.delete(idx); cache.set(idx, hit); // LRU 갱신
+        return hit;
+      }
     }
 
-    // 2. 네이티브 경로 (Android PdfRenderer) — pdf.js보다 훨씬 빠르고 선명
+    const container = containerRef.current;
+    const cssW = container?.clientWidth  || 800;
+    const cssH = container?.clientHeight || 600;
+    // 실효 렌더 스케일: DPR × 줌 배율, 최대 4× (메모리 보호)
+    const dpr         = Math.min(window.devicePixelRatio || 1, 3);
+    const renderScale = Math.min(extraScale, 4);
+
+    // ── 네이티브 경로 (Android PdfRenderer) ─────────────────────────────────
     if (nativePdfReadyRef.current) {
       try {
         const { renderNativePdfPage } = await import('../lib/pdfNative');
-        const container = containerRef.current;
-        const dpr = Math.min(window.devicePixelRatio || 1, 3);
-        const cssW = container?.clientWidth || 800;
-        const targetWidth = Math.round(cssW * dpr);
+        const targetWidth = Math.round(cssW * dpr * renderScale);
         const bmp = await renderNativePdfPage(idx, targetWidth);
         if (bmp) {
-          // LRU 캐시에 저장
-          if (cache.size >= PDF_CACHE_MAX) {
-            const protectedIdx = live.current.pageIdx;
-            for (const [k] of cache) {
-              if (k !== idx && k !== protectedIdx) { cache.get(k)?.close(); cache.delete(k); break; }
+          if (extraScale <= 1) { // 기본 스케일만 LRU 캐시에 저장
+            if (cache.size >= PDF_CACHE_MAX) {
+              const protectedIdx = live.current.pageIdx;
+              for (const [k] of cache) {
+                if (k !== idx && k !== protectedIdx) { cache.get(k)?.close(); cache.delete(k); break; }
+              }
             }
+            cache.set(idx, bmp);
           }
-          cache.set(idx, bmp);
           return bmp;
         }
       } catch (e) {
@@ -695,17 +703,12 @@ export const PenCanvas: React.FC<Props> = ({
       }
     }
 
-    // pdf.js 렌더 (웹 폴백)
+    // ── pdf.js 폴백 ──────────────────────────────────────────────────────────
     if (!pdfDocRef.current) return null;
     try {
-      const page = await pdfDocRef.current.getPage(idx + 1);
-      const container = containerRef.current;
-      const cssW = container?.clientWidth  || 800;
-      const cssH = container?.clientHeight || 600;
-      // DPR 기반 스케일 (최대 2.5 — 메모리/화질 균형)
-      const dpr   = Math.min(window.devicePixelRatio || 1, 2.5);
+      const page  = await pdfDocRef.current.getPage(idx + 1);
       const vp0   = page.getViewport({ scale: 1 });
-      const scale = Math.min(cssW / vp0.width, cssH / vp0.height) * dpr;
+      const scale = Math.min(cssW / vp0.width, cssH / vp0.height) * dpr * renderScale;
       const vp    = page.getViewport({ scale });
       const c     = document.createElement('canvas');
       c.width  = Math.round(vp.width);
@@ -714,22 +717,16 @@ export const PenCanvas: React.FC<Props> = ({
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, c.width, c.height);
       await page.render({ canvasContext: ctx, viewport: vp }).promise;
-      // JPEG 변환 없이 ImageBitmap으로 직접 추출 (무손실)
       const bmp = await createImageBitmap(c);
-
-      // LRU 캐시 크기 초과 시 가장 오래된 항목 해제
-      if (cache.size >= PDF_CACHE_MAX) {
-        // 현재 표시 중 페이지(live.current.pageIdx)와 렌더 요청 페이지(idx)는 퇴거 금지
-        const protectedIdx = live.current.pageIdx;
-        for (const [k] of cache) {
-          if (k !== idx && k !== protectedIdx) {
-            cache.get(k)?.close();
-            cache.delete(k);
-            break; // 한 번에 하나씩 퇴거
+      if (extraScale <= 1) {
+        if (cache.size >= PDF_CACHE_MAX) {
+          const protectedIdx = live.current.pageIdx;
+          for (const [k] of cache) {
+            if (k !== idx && k !== protectedIdx) { cache.get(k)?.close(); cache.delete(k); break; }
           }
         }
+        cache.set(idx, bmp);
       }
-      cache.set(idx, bmp);
       return bmp;
     } catch (e) {
       console.error(`[damoa-pen] PDF 페이지 ${idx+1} 렌더 실패:`, e);
@@ -738,16 +735,17 @@ export const PenCanvas: React.FC<Props> = ({
   }, []); // 의존성 없음 — ref만 사용
 
   /** 페이지 idx를 렌더해서 캔버스 배경으로 표시
+   * @param extraScale 줌 배율에 맞는 추가 스케일 (기본 1). 줌 상태일 때 고해상도 렌더.
    * PDF 노트: pages[idx].pdfPageIdx 가 있으면 해당 PDF 원본 페이지 렌더,
    *           없으면 (삽입된 빈 페이지) → 흰 배경 */
-  const loadPageBg = useCallback(async (idx: number) => {
+  const loadPageBg = useCallback(async (idx: number, extraScale = 1) => {
     const pg = live.current.pages[idx];
     if (pg && pg.pdfPageIdx === undefined && live.current.pages.some(p => p.pdfPageIdx !== undefined)) {
       // PDF 노트 안의 삽입 빈 페이지 → PDF 배경 없음
       pageBgImageRef.current = null; redrawBase(); return;
     }
     const pdfIdx = (pg?.pdfPageIdx !== undefined) ? pg.pdfPageIdx : idx;
-    const bmp = await renderPdfPage(pdfIdx);
+    const bmp = await renderPdfPage(pdfIdx, extraScale);
     if (!bmp) { pageBgImageRef.current = null; redrawBase(); return; }
     pageBgImageRef.current = bmp;
     redrawBase();
@@ -1032,6 +1030,20 @@ export const PenCanvas: React.FC<Props> = ({
   }, [initCanvas, pageIdx]);
 
   useEffect(() => { redrawBase(); }, [paperType, showLines, lineSpacing, redrawBase]);
+
+  // ── PDF 줌 시 고해상도 재렌더 ────────────────────────────────────────────
+  // 핀치 줌이 안정된 후 300ms 뒤에 현재 배율로 PDF 재렌더 → 원본 선명도 복원
+  useEffect(() => {
+    if (!pdfBase64) return; // PDF 노트가 아니면 무시
+    if (pdfZoomRerenderTimer.current) clearTimeout(pdfZoomRerenderTimer.current);
+    const zoom = canvasXform.scale;
+    pdfZoomRerenderTimer.current = setTimeout(() => {
+      // 1x 이하로 돌아오면 기본 캐시 버전 복원 (extraScale=1)
+      const extraScale = Math.max(1, Math.min(4, zoom));
+      loadPageBg(live.current.pageIdx, extraScale);
+    }, zoom <= 1.05 ? 0 : 200); // 줌 해제는 즉시, 확대는 200ms 디바운스
+    return () => { if (pdfZoomRerenderTimer.current) clearTimeout(pdfZoomRerenderTimer.current); };
+  }, [canvasXform.scale, pdfBase64, loadPageBg]);
 
   // ocrMsg 자동 숨기기 (5초 후)
   useEffect(() => {
@@ -1405,6 +1417,9 @@ export const PenCanvas: React.FC<Props> = ({
           const dx2 = p.x - hlStartRef.current.x, dy2 = p.y - hlStartRef.current.y;
           const rawDeg = Math.atan2(Math.abs(dy2), Math.abs(dx2)) * 180 / Math.PI;
           setHlAngle(Math.round(rawDeg));
+          // 펜 화면 좌표 추적
+          const rect3 = cachedRectRef.current;
+          if (rect3) setHlPenScreen({ x: e.clientX - rect3.left, y: e.clientY - rect3.top });
           continue;
         }
 
@@ -1434,6 +1449,7 @@ export const PenCanvas: React.FC<Props> = ({
         let stroke = currentStrokeRef.current;
         // 형광펜 직선: 각도 HUD 숨기기
         setHlAngle(null);
+        setHlPenScreen(null);
         // 형광펜 직선: 시작점→끝점 2포인트만 저장
         if (stroke.penType === 'highlighter' && hlStartRef.current && stroke.points.length > 0) {
           const rect2 = cachedRectRef.current || target.getBoundingClientRect();
@@ -1938,29 +1954,26 @@ export const PenCanvas: React.FC<Props> = ({
     pageTransitioning.current = true;
     const dir = idx > live.current.pageIdx ? 1 : -1; // 1 = 다음, -1 = 이전
 
-    // 현재 페이지 슬라이드 아웃
+    // 현재 페이지 슬라이드 아웃 (0.26s와 타이밍 맞춤)
     setSlideActive(true);
     setSlideOffset(dir * -100);
 
     setTimeout(() => {
-      // 페이지 전환 (캔버스 즉시 재렌더)
       goToPage(idx);
-      // 반대편에서 나타나도록 순간 이동 (transition 없이)
       setSlideActive(false);
       setSlideOffset(dir * 100);
 
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          // 슬라이드 인
           setSlideActive(true);
           setSlideOffset(0);
           setTimeout(() => {
             pageTransitioning.current = false;
             setSlideActive(false);
-          }, 200);
+          }, 260);
         });
       });
-    }, 150);
+    }, 180);
   };
   animatedGoToPageRef.current = animatedGoToPage;
   renderPeekCanvasRef.current = renderPeekCanvas;
@@ -3083,7 +3096,7 @@ export const PenCanvas: React.FC<Props> = ({
         <div style={{
           position: 'absolute', inset: 0,
           transform: `translateX(${slideOffset}%)`,
-          transition: slideActive ? 'transform 0.15s ease-out' : 'none',
+          transition: slideActive ? 'transform 0.26s cubic-bezier(0.35,0,0.25,1)' : 'none',
         }}>
           {/* 이전 페이지 peek (왼쪽) */}
           <canvas ref={peekLeftCanvasRef} style={{
@@ -3376,22 +3389,19 @@ export const PenCanvas: React.FC<Props> = ({
           </div>
         )}
 
-        {/* ── 형광펜 직선 각도 HUD ──────────────────────────────────────────── */}
-        {hlAngle !== null && hlStraight && (
-          <div className="absolute top-16 left-1/2 pointer-events-none"
-            style={{transform:'translateX(-50%)', zIndex:60}}>
-            <div className={`flex flex-col items-center gap-1 px-3 py-1.5 rounded-2xl shadow-lg backdrop-blur-sm
-              ${hlAngle <= 5 || hlAngle >= 85
-                ? 'bg-green-500/85 text-white'
-                : 'bg-black/70 text-white/90'}`}>
-              <div className="flex items-center gap-1.5">
-                {/* 수평 기준선 */}
-                <div className="w-8 h-px bg-current opacity-60"/>
-                <span className="text-sm font-black tabular-nums">{hlAngle}°</span>
-                <div className="w-8 h-px bg-current opacity-60"/>
-              </div>
-              {hlAngle <= 5 && <span className="text-[10px] font-bold opacity-90">수평</span>}
-              {hlAngle >= 85 && <span className="text-[10px] font-bold opacity-90">수직</span>}
+        {/* ── 형광펜 직선 각도 HUD (펜 팁 왼쪽에 따라오는 소형 뱃지) ───────── */}
+        {hlAngle !== null && hlStraight && hlPenScreen && (
+          <div style={{
+            position: 'absolute',
+            left: Math.max(4, hlPenScreen.x - 48),
+            top: hlPenScreen.y - 13,
+            pointerEvents: 'none',
+            zIndex: 60,
+            transition: 'left 0.04s linear, top 0.04s linear',
+          }}>
+            <div className={`px-1.5 py-0.5 rounded-lg text-xs font-black tabular-nums shadow-md
+              ${hlAngle <= 5 || hlAngle >= 85 ? 'bg-green-500 text-white' : 'bg-black/75 text-white'}`}>
+              {hlAngle}°
             </div>
           </div>
         )}

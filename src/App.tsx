@@ -226,8 +226,11 @@ export default function App() {
     if (!noteId) return; // 새 노트는 자동저장 안 함
     const note = notes.find(n => n.id === noteId);
     if (!note) return;
-    await saveNote({ ...note, pageStrokes, updatedAt: Date.now() });
-    setNotes(prev => prev.map(n => n.id === noteId ? { ...n, pageStrokes } : n));
+    // notes 상태를 먼저 동기적으로 업데이트 → 목록에서 즉시 돌아와도 최신 스트로크 반영
+    const updatedNote = { ...note, pageStrokes, updatedAt: Date.now() };
+    setNotes(prev => prev.map(n => n.id === noteId ? updatedNote : n));
+    // IndexedDB 저장은 비동기로
+    await saveNote(updatedNote);
   }, [notes]);
 
   // 현재 탭의 페이지 위치 저장

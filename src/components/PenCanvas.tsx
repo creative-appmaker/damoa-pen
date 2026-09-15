@@ -347,6 +347,7 @@ export const PenCanvas: React.FC<Props> = ({
   const imgInputRef     = useRef<HTMLInputElement | null>(null); // 사진 첨부 input
   const pdfDocRef       = useRef<any>(null);               // pdf.js PDFDocumentProxy
   const pdfCacheRef     = useRef<Map<number, ImageBitmap>>(new Map()); // 인메모리 ImageBitmap 캐시 (무손실, GPU-backed)
+  const nativePdfReadyRef = useRef(false);                 // Android 네이티브 PdfRenderer 사용 중 여부
   const pageUserImgRef  = useRef<HTMLImageElement | null>(null);  // 현재 페이지 첨부 사진
   const pageImagesRef   = useRef<(string|undefined)[]>([]); // 전체 페이지 첨부 사진 배열 (ref → stale 방지)
 
@@ -660,7 +661,33 @@ export const PenCanvas: React.FC<Props> = ({
       cache.set(idx, hit);
       return hit;
     }
-    // 2. pdf.js 렌더
+
+    // 2. 네이티브 경로 (Android PdfRenderer) — pdf.js보다 훨씬 빠르고 선명
+    if (nativePdfReadyRef.current) {
+      try {
+        const { renderNativePdfPage } = await import('../lib/pdfNative');
+        const container = containerRef.current;
+        const dpr = Math.min(window.devicePixelRatio || 1, 3);
+        const cssW = container?.clientWidth || 800;
+        const targetWidth = Math.round(cssW * dpr);
+        const bmp = await renderNativePdfPage(idx, targetWidth);
+        if (bmp) {
+          // LRU 캐시에 저장
+          if (cache.size >= PDF_CACHE_MAX) {
+            const protectedIdx = live.current.pageIdx;
+            for (const [k] of cache) {
+              if (k !== idx && k !== protectedIdx) { cache.get(k)?.close(); cache.delete(k); break; }
+            }
+          }
+          cache.set(idx, bmp);
+          return bmp;
+        }
+      } catch (e) {
+        console.warn('[damoa-pen] 네이티브 PDF 렌더 실패, pdf.js 폴백:', e);
+      }
+    }
+
+    // pdf.js 렌더 (웹 폴백)
     if (!pdfDocRef.current) return null;
     try {
       const page = await pdfDocRef.current.getPage(idx + 1);
@@ -772,8 +799,12 @@ export const PenCanvas: React.FC<Props> = ({
     pdfDocRef.current = null;
     pdfCacheRef.current.forEach(bmp => bmp.close());
     pdfCacheRef.current.clear();
-    // pageBgImageRef는 pdfCacheRef와 동일 객체를 참조 → close()는 위에서 이미 처리
     pageBgImageRef.current = null;
+    // 네이티브 PDF 리소스 해제
+    if (nativePdfReadyRef.current) {
+      nativePdfReadyRef.current = false;
+      import('../lib/pdfNative').then(({ closeNativePdf }) => closeNativePdf());
+    }
 
     if (editingNote?.pdfBase64) {
       // ── PDF 노트 복원 ──
@@ -826,9 +857,32 @@ export const PenCanvas: React.FC<Props> = ({
       }
       baseImageRef.current = null;
 
-      // startPage는 위 두 분기에서 각각 setPageIdx로 처리됨 — pdf.js용으로 별도 계산
+      // startPage는 위 두 분기에서 각각 setPageIdx로 처리됨 — 렌더용으로 별도 계산
       const startPage = Math.min(initialPageIdx ?? 0, count - 1);
-      // pdf.js로 로드 후 시작 페이지 즉시 렌더, 나머지 백그라운드
+      const prefetchEnd = Math.min(5, count);
+
+      // ── 네이티브 경로 우선 시도 (Android) ──────────────────────────────────
+      const { isNativePdfAvailable, openNativePdf } = await import('../lib/pdfNative');
+      if (isNativePdfAvailable()) {
+        try {
+          await openNativePdf(editingNote.pdfBase64);
+          nativePdfReadyRef.current = true;
+          await loadPageBg(startPage);
+          // 백그라운드 미리 렌더
+          for (let i = 0; i < prefetchEnd; i++) {
+            if (i === startPage) continue;
+            setPdfRenderMsg(`PDF 미리 렌더 ${i + 1}/${count}...`);
+            await renderPdfPage(i);
+          }
+          setPdfRenderMsg(null);
+          return; // 네이티브 성공 → pdf.js 건너뜀
+        } catch (e) {
+          console.warn('[damoa-pen] 네이티브 PDF 초기화 실패, pdf.js 폴백:', e);
+          nativePdfReadyRef.current = false;
+        }
+      }
+
+      // ── pdf.js 폴백 (웹 / 네이티브 불가 시) ────────────────────────────────
       const pdfjsLib = initPdfJs();
       if (pdfjsLib) {
         const binary = atob(editingNote.pdfBase64);
@@ -838,8 +892,6 @@ export const PenCanvas: React.FC<Props> = ({
           .then(async (pdf: any) => {
             pdfDocRef.current = pdf;
             await loadPageBg(startPage);
-            // 백그라운드: 다음 4페이지만 미리 렌더 (메모리 절약)
-            const prefetchEnd = Math.min(5, count);
             for (let i = 1; i < prefetchEnd; i++) {
               setPdfRenderMsg(`PDF 미리 렌더 ${i+1}/${count}...`);
               await renderPdfPage(i);
@@ -1890,7 +1942,19 @@ export const PenCanvas: React.FC<Props> = ({
       }
       const base64 = btoa(bin);
 
-      // ② pdf.js로 로드
+      // ② 네이티브 경로 먼저 시도 (Android)
+      const { isNativePdfAvailable: isNative, openNativePdf } = await import('../lib/pdfNative');
+      if (isNative()) {
+        try {
+          await openNativePdf(base64);
+          nativePdfReadyRef.current = true;
+        } catch (e) {
+          console.warn('[damoa-pen] 임포트 시 네이티브 PDF 초기화 실패:', e);
+          nativePdfReadyRef.current = false;
+        }
+      }
+
+      // ③ pdf.js도 로드 (텍스트 추출 + 웹 폴백 렌더)
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       pdfDocRef.current = pdf;
       pdfCacheRef.current.forEach(bmp => bmp.close());

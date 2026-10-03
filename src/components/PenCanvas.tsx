@@ -435,6 +435,13 @@ export const PenCanvas: React.FC<Props> = ({
   const [pdfRenderMsg,  setPdfRenderMsg] = useState<string | null>(null); // "3/40페이지 렌더링 중..."
   const [pdfInvert,     setPdfInvert]    = useState(false); // PDF 반전 보기
   const [pageImages,    setPageImages]   = useState<(string|undefined)[]>(editingNote?.pageImages ?? []);
+  // 붙이기 버튼 숨김 상태 (paste 실행 후 숨김 → undo/취소 후 다시 표시)
+  const [pasteDone, setPasteDone] = useState(false);
+  // 붙이기 레이어 추적 (붙이기 시 자동 생성, 확정/취소 시 제거)
+  const [isPasteLayer, setIsPasteLayer] = useState(false);
+  const pasteLayerPrevIdRef   = useRef<string>('layer-default');
+  const pasteLayerPrevNameRef = useRef<string>('기본');
+
   // ── 페이지 병합 모달 ────────────────────────────────────────────────────────
   const [showMergeModal,   setShowMergeModal]   = useState(false);
   const [mergeTargetNote,  setMergeTargetNote]  = useState<string>(''); // target note id
@@ -1595,6 +1602,14 @@ export const PenCanvas: React.FC<Props> = ({
           }
           // bbox 내부 클릭 → 이동
           if (cx>=bbox.x && cx<=bbox.x+bbox.w && cy>=bbox.y && cy<=bbox.y+bbox.h) {
+            // 이동 시작 전 상태를 undo 스택에 저장
+            const _mpid = pages[live.current.pageIdx]?.id;
+            if (_mpid) {
+              const _mh = undoHistoriesRef.current.get(_mpid) ?? [];
+              const _mt = _mh.length >= 30 ? _mh.slice(_mh.length - 29) : _mh;
+              undoHistoriesRef.current.set(_mpid, [..._mt, [...strokesRef.current]]);
+              redoHistoriesRef.current.delete(_mpid);
+            }
             isDraggingSelRef.current = true;
             setIsDraggingSel(true);
             selLassoRef.current = []; // 이동 시작 시 라쏘 클리어
@@ -1925,7 +1940,15 @@ export const PenCanvas: React.FC<Props> = ({
   };
 
 
+  // cancelPasteLayer는 아래에 선언되지만 handleUndo에서 참조 — ref로 우회
+  const cancelPasteLayerRef = useRef<() => void>(() => {});
+
   const handleUndo = useCallback(() => {
+    // 붙이기 레이어 상태이면 취소(레이어 삭제)로 처리
+    if (isPasteLayer) {
+      cancelPasteLayerRef.current();
+      return;
+    }
     const pageId = pages[pageIdx]?.id;
     if (!pageId) return;
     const history = undoHistoriesRef.current.get(pageId) ?? [];
@@ -1937,7 +1960,10 @@ export const PenCanvas: React.FC<Props> = ({
     strokesRef.current = [...prev];
     setPages(p => p.map((pg, i) => i === pageIdx ? { ...pg, strokes: [...prev] } : pg));
     redrawBase();
-  }, [pageIdx, pages, redrawBase]);
+    // 되돌리기 후 붙이기 버튼 다시 표시 (잘못 붙인 경우 재시도 가능)
+    setPasteDone(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPasteLayer, pageIdx, pages, redrawBase]);
 
   const handleRedo = useCallback(() => {
     const pageId = pages[pageIdx]?.id;
@@ -2058,6 +2084,9 @@ export const PenCanvas: React.FC<Props> = ({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialPdfFile]);
+
+  // 클립보드 내용이 바뀌면(새로 오리기/복사) pasteDone 초기화 → 버튼 다시 표시
+  useEffect(() => { setPasteDone(false); }, [clipboardStrokes]);
 
   // ── 사진 첨부 ──────────────────────────────────────────────────────────────
   const importImage = useCallback(async (file: File) => {
@@ -2214,28 +2243,143 @@ export const PenCanvas: React.FC<Props> = ({
 
   const handlePaste = useCallback(() => {
     if (!clipboardStrokes?.length) return;
+
     const offset = 30;
     const pasted = clipboardStrokes.map(s => ({
       ...s,
       id: `s-${Date.now()}-${Math.random()}`,
       points: s.points.map((p: Point) => ({...p, x:p.x+offset, y:p.y+offset})),
     }));
-    strokesRef.current = [...strokesRef.current, ...pasted];
-    setPages(prev => prev.map((pg,i) => i===live.current.pageIdx ? {...pg, strokes:strokesRef.current} : pg));
+
+    // ── 붙이기 전용 레이어 생성 ──────────────────────────────────────────────
+    // 현재 활성 레이어를 otherLayers에 보존
+    const curPages = live.current.pages;
+    const curPageStrokes: Stroke[][] = curPages.map((p, i) =>
+      i === live.current.pageIdx ? [...strokesRef.current] as Stroke[] : [...p.strokes] as Stroke[]
+    );
+    const prevId   = activeLayerIdRef.current;
+    const prevName = activeLayerNameRef.current;
+    pasteLayerPrevIdRef.current   = prevId;
+    pasteLayerPrevNameRef.current = prevName;
+
+    const pasteLayerId = `layer-paste-${Date.now()}`;
+    const updatedOthers = [
+      ...otherLayersRef.current,
+      { id: prevId, name: prevName, pageStrokes: curPageStrokes },
+    ];
+    otherLayersRef.current   = updatedOthers;
+    activeLayerIdRef.current = pasteLayerId;
+    activeLayerNameRef.current = '붙이기';
+    setOtherLayers(updatedOthers);
+    setActiveLayerId(pasteLayerId);
+    setActiveLayerName('붙이기');
+
+    // 붙이기 레이어에는 붙인 획만 (현재 페이지만, 나머지는 빈 페이지)
+    strokesRef.current = pasted as Stroke[];
+    const pastePages: Page[] = curPages.map((p, i) => ({
+      id: p.id,
+      strokes: i === live.current.pageIdx ? pasted as Stroke[] : [],
+    }));
+    setPages(pastePages);
     redrawBase();
+
+    // 붙인 획 선택 상태 설정
     const ids = new Set(pasted.map((s: Stroke) => s.id));
     setSelectedIds(ids); selIdsRef.current = ids;
     const bb = strokeBBoxCalc(pasted);
     setSelBBox(bb); selBBoxRef.current = bb;
-    if (bb) drawSelectionOverlay(null,[],bb,true);
-    // 붙인 즉시 선택 도구로 전환 → 바로 드래그로 이동 가능
-    // 이전 펜 상태 저장 (이동 완료 후 자동 복귀용)
+    if (bb) drawSelectionOverlay(null, [], bb, true);
+
+    // 즉시 선택 도구로 전환
     if (!live.current.isSelectTool) {
       prevPenBeforeSelectRef.current = { penType: live.current.penType, isEraser: live.current.isEraser };
     }
     setIsSelectTool(true);
     live.current.isSelectTool = true;
+
+    // 붙이기 레이어 활성화 상태 표시
+    setIsPasteLayer(true);
+    setPasteDone(true);
   }, [clipboardStrokes, redrawBase, drawSelectionOverlay]);
+
+  // ── 붙이기 레이어 확정 (기본 레이어에 병합) ──────────────────────────────
+  const confirmPasteLayer = useCallback(() => {
+    if (!isPasteLayer) return;
+    const curPasteStrokes = [...strokesRef.current] as Stroke[];
+    const curPageIdx = live.current.pageIdx;
+
+    // 기존 레이어(prevId)를 otherLayers에서 찾아 활성으로 복귀
+    const prevId = pasteLayerPrevIdRef.current;
+    const prevLayerIdx = otherLayersRef.current.findIndex(l => l.id === prevId);
+    if (prevLayerIdx < 0) return;
+    const prevLayer = otherLayersRef.current[prevLayerIdx];
+
+    // otherLayers에서 prevLayer 제거, 붙이기 레이어는 이미 active이므로 그냥 제거
+    const newOthers = otherLayersRef.current.filter(l => l.id !== prevId);
+    otherLayersRef.current   = newOthers;
+    activeLayerIdRef.current = prevId;
+    activeLayerNameRef.current = prevLayer.name;
+
+    // 기존 레이어 페이지에 붙이기 획 병합
+    const mergedPageStrokes: Stroke[][] = prevLayer.pageStrokes.map((ps, i) =>
+      i === curPageIdx ? [...ps, ...curPasteStrokes] : [...ps]
+    );
+    const mergedPages: Page[] = live.current.pages.map((p, i) => ({
+      id: p.id,
+      strokes: mergedPageStrokes[i] ?? [],
+    }));
+    strokesRef.current = mergedPages[curPageIdx]?.strokes ?? [];
+    setOtherLayers(newOthers);
+    setActiveLayerId(prevId);
+    setActiveLayerName(prevLayer.name);
+    setPages(mergedPages);
+    redrawBase();
+    clearSelection();
+    setIsPasteLayer(false);
+    setIsSelectTool(false);
+    live.current.isSelectTool = false;
+    // 이전 펜 복귀
+    const prev = prevPenBeforeSelectRef.current;
+    setPenType(prev.penType); live.current.penType = prev.penType;
+    setIsEraser(prev.isEraser); live.current.isEraser = prev.isEraser;
+  }, [isPasteLayer, clearSelection, redrawBase]);
+
+  // ── 붙이기 레이어 취소 (레이어 삭제, 기존 레이어 복귀) ──────────────────
+  const cancelPasteLayer = useCallback(() => {
+    if (!isPasteLayer) return;
+    const prevId   = pasteLayerPrevIdRef.current;
+    const prevLayerIdx = otherLayersRef.current.findIndex(l => l.id === prevId);
+    if (prevLayerIdx < 0) return;
+    const prevLayer = otherLayersRef.current[prevLayerIdx];
+
+    const newOthers = otherLayersRef.current.filter(l => l.id !== prevId);
+    otherLayersRef.current   = newOthers;
+    activeLayerIdRef.current = prevId;
+    activeLayerNameRef.current = prevLayer.name;
+
+    const restoredPages: Page[] = live.current.pages.map((p, i) => ({
+      id: p.id,
+      strokes: prevLayer.pageStrokes[i] ?? [],
+    }));
+    strokesRef.current = restoredPages[live.current.pageIdx]?.strokes ?? [];
+    setOtherLayers(newOthers);
+    setActiveLayerId(prevId);
+    setActiveLayerName(prevLayer.name);
+    setPages(restoredPages);
+    redrawBase();
+    clearSelection();
+    setIsPasteLayer(false);
+    setIsSelectTool(false);
+    live.current.isSelectTool = false;
+    setPasteDone(false); // 버튼 재표시
+    // 이전 펜 복귀
+    const prev = prevPenBeforeSelectRef.current;
+    setPenType(prev.penType); live.current.penType = prev.penType;
+    setIsEraser(prev.isEraser); live.current.isEraser = prev.isEraser;
+  }, [isPasteLayer, clearSelection, redrawBase]);
+
+  // cancelPasteLayer ref 동기화 (handleUndo에서 참조)
+  cancelPasteLayerRef.current = cancelPasteLayer;
 
   // ── Save (OCR 없음 — 빠른 저장) ──────────────────────────────────────────
   const handleSave = async () => {
@@ -4031,14 +4175,36 @@ export const PenCanvas: React.FC<Props> = ({
             </div>
           </div>
         )}
-        {/* 붙이기 버튼 — 클립보드에 획이 있으면 항상 표시 (선택 도구 불필요) */}
-        {!!clipboardStrokes?.length && selectedIds.size === 0 && (
+        {/* 붙이기 버튼 — 붙이기 전까지만 표시, 실행 후 숨김, 되돌리기 시 재표시 */}
+        {!!clipboardStrokes?.length && selectedIds.size === 0 && !pasteDone && (
           <div style={{position:'absolute', bottom:80, right:16, zIndex:70, pointerEvents:'auto'}}>
             <button type="button" onClick={handlePaste}
               className="px-4 py-2.5 rounded-2xl text-sm font-black text-white shadow-xl cursor-pointer active:scale-95 transition-all"
               style={{background:'rgba(124,58,237,0.9)'}}>
               붙이기 ({clipboardStrokes.length}획)
             </button>
+          </div>
+        )}
+
+        {/* ── 붙이기 레이어 확정/취소 배너 ── */}
+        {isPasteLayer && (
+          <div style={{
+            position:'absolute', top:12, left:'50%', transform:'translateX(-50%)',
+            zIndex:80, pointerEvents:'auto',
+          }}>
+            <div className="flex items-center gap-2 rounded-2xl px-3 py-2 shadow-2xl border border-white/15"
+              style={{background:'rgba(20,20,30,0.92)', backdropFilter:'blur(8px)'}}>
+              <span className="text-[11px] font-black text-yellow-300 mr-1">📋 붙이기 레이어</span>
+              <div className="w-px h-4 bg-white/20"/>
+              <button type="button" onClick={confirmPasteLayer}
+                className="flex items-center gap-1 px-3 py-1 rounded-xl text-xs font-black cursor-pointer active:scale-95 bg-purple-600 text-white hover:bg-purple-500">
+                ✓ 확정
+              </button>
+              <button type="button" onClick={cancelPasteLayer}
+                className="flex items-center gap-1 px-3 py-1 rounded-xl text-xs font-black cursor-pointer active:scale-95 bg-white/10 text-white/70 hover:bg-white/20">
+                ✗ 취소
+              </button>
+            </div>
           </div>
         )}
 

@@ -6,7 +6,7 @@ import {
 import { PenNote, Folder } from '../types';
 import { exportAllNotes } from '../lib/storage';
 
-const APP_VERSION = 'V7.4';
+const APP_VERSION = 'V7.5';
 
 async function handleBackupExport() {
   const json = await exportAllNotes();
@@ -43,6 +43,7 @@ interface Props {
   darkMode: boolean;
   searchQuery?: string;
   onSearchQueryChange?: (q: string) => void;
+  onBatchOcr?: (noteIds: string[]) => void;
 }
 
 type SortMode = 'updatedAt' | 'createdAt' | 'title';
@@ -58,11 +59,22 @@ const VIEW_MODES: { mode: ViewMode; icon: React.ReactNode; label: string }[] = [
 export const NoteList: React.FC<Props> = ({
   notes, folders, onNew, onOpenPdf, onEdit, onDelete, onTogglePin,
   onMoveToFolder, onOpenFolderPanel, onSettings, darkMode,
-  searchQuery: externalQuery, onSearchQueryChange,
+  searchQuery: externalQuery, onSearchQueryChange, onBatchOcr,
 }) => {
   const [internalQuery, setInternalQuery] = useState('');
   const [showFabMenu, setShowFabMenu] = useState(false);
   const pdfInputRef = React.useRef<HTMLInputElement | null>(null);
+  // 배치 선택 모드
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const toggleSelect = (note: PenNote) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(note.id)) next.delete(note.id); else next.add(note.id);
+      return next;
+    });
+  };
+  const exitSelectMode = () => { setSelectMode(false); setSelectedIds(new Set()); };
   const query = externalQuery !== undefined ? externalQuery : internalQuery;
   const setQuery = (q: string) => {
     setInternalQuery(q);
@@ -219,6 +231,21 @@ export const NoteList: React.FC<Props> = ({
               className="w-8 h-8 shrink-0 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 cursor-pointer">
               <Download className="w-4 h-4 text-emerald-600 dark:text-emerald-400"/>
             </button>
+            {/* 배치 선택 모드 토글 */}
+            {onBatchOcr && (
+              <button type="button" onClick={() => { setSelectMode(s => !s); setSelectedIds(new Set()); }}
+                title="노트 선택 (배치 AI 인식)"
+                className={`w-8 h-8 shrink-0 flex items-center justify-center rounded-xl cursor-pointer transition-colors
+                  ${selectMode ? 'bg-blue-500 text-white' : 'bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 text-stone-600 dark:text-slate-400'}`}>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="1" y="1" width="5.5" height="5.5" rx="1.2"/>
+                  <path d="M4 3.5 L3 4.8 L2.5 4.3" strokeWidth="1.4"/>
+                  <rect x="9.5" y="1" width="5.5" height="5.5" rx="1.2"/>
+                  <rect x="1" y="9.5" width="5.5" height="5.5" rx="1.2"/>
+                  <rect x="9.5" y="9.5" width="5.5" height="5.5" rx="1.2"/>
+                </svg>
+              </button>
+            )}
             {/* Settings */}
             <button type="button" onClick={onSettings}
               className="w-8 h-8 shrink-0 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-slate-800 hover:bg-stone-200 cursor-pointer">
@@ -293,11 +320,54 @@ export const NoteList: React.FC<Props> = ({
                   if (n) onMoveToFolder(n, folderId);
                 } : undefined}
                 searchQuery={query.trim() || undefined}
+                selectMode={selectMode}
+                isSelected={selectedIds.has(note.id)}
+                onSelect={toggleSelect}
               />
             ))}
           </div>
         )}
       </div>
+
+      {/* 배치 선택 모드 하단 액션 바 */}
+      {selectMode && (
+        <div className="fixed bottom-0 left-0 right-0 z-30 bg-white dark:bg-slate-900 border-t border-stone-200 dark:border-slate-700 shadow-2xl"
+          style={{paddingBottom:'env(safe-area-inset-bottom,0px)'}}>
+          <div className="flex items-center gap-2 px-4 py-3">
+            <button type="button"
+              onClick={() => {
+                if (selectedIds.size === filtered.length) {
+                  setSelectedIds(new Set());
+                } else {
+                  setSelectedIds(new Set(filtered.map(n => n.id)));
+                }
+              }}
+              className="text-xs font-black text-blue-600 dark:text-blue-400 cursor-pointer px-2 py-1.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 shrink-0">
+              {selectedIds.size === filtered.length ? '전체해제' : '전체선택'}
+            </button>
+            <span className="text-sm font-black text-stone-700 dark:text-slate-300 flex-1 text-center">
+              {selectedIds.size > 0 ? `${selectedIds.size}개 선택됨` : '노트를 선택하세요'}
+            </span>
+            <button type="button" onClick={exitSelectMode}
+              className="text-xs font-black text-stone-500 cursor-pointer px-2 py-1.5 rounded-xl bg-stone-100 dark:bg-slate-800 shrink-0">
+              취소
+            </button>
+            <button type="button"
+              disabled={selectedIds.size === 0}
+              onClick={() => {
+                if (selectedIds.size === 0) return;
+                onBatchOcr?.([...selectedIds]);
+                exitSelectMode();
+              }}
+              className={`text-xs font-black px-3 py-1.5 rounded-xl shrink-0 cursor-pointer transition-colors
+                ${selectedIds.size > 0
+                  ? 'bg-purple-600 hover:bg-purple-700 text-white'
+                  : 'bg-stone-200 dark:bg-slate-700 text-stone-400 cursor-not-allowed'}`}>
+              ✨ AI 인식
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* FAB */}
       {notes.length > 0 && (

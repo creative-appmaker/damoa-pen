@@ -13,6 +13,10 @@ interface Props {
   folders?: Folder[];
   onMoveToFolder?: (noteId: string, folderId: string | undefined) => void;
   searchQuery?: string;
+  // 배치 선택 모드
+  selectMode?: boolean;
+  isSelected?: boolean;
+  onSelect?: (note: PenNote) => void;
 }
 
 // 검색어 박스 하이라이트 헬퍼
@@ -66,6 +70,7 @@ function fmtTime(ts: number) {
 
 export const NoteCard: React.FC<Props> = ({
   note, viewMode, onEdit, onDeleteRequest, onTogglePin, folders, onMoveToFolder, searchQuery,
+  selectMode, isSelected, onSelect,
 }) => {
   const sq = searchQuery?.trim() ?? '';
   const bgColor   = note.paperType==='black'?'#1a1a1a':note.paperType==='yellow'?'#fef9c3':'#ffffff';
@@ -156,8 +161,8 @@ export const NoteCard: React.FC<Props> = ({
     </div>
   ) : null;
 
-  // Long-press handlers added to each card wrapper
-  const longPressProps = {
+  // Long-press handlers added to each card wrapper (선택 모드에서는 비활성)
+  const longPressProps = selectMode ? {} : {
     onTouchStart: startLongPress,
     onTouchEnd: cancelLongPress,
     onTouchMove: cancelLongPress,
@@ -166,14 +171,28 @@ export const NoteCard: React.FC<Props> = ({
     onMouseLeave: cancelLongPress,
   };
 
+  // 선택 모드 오버레이
+  const selOverlay = selectMode ? (
+    <div
+      className="absolute inset-0 z-20 rounded-[inherit]"
+      style={{background: isSelected ? 'rgba(59,130,246,0.18)' : 'transparent'}}
+      onClick={e => { e.stopPropagation(); onSelect?.(note); }}>
+      <div className={`absolute top-2 right-2 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all
+        ${isSelected ? 'bg-blue-500 border-blue-500' : 'bg-white/80 dark:bg-slate-800/80 border-stone-300 dark:border-slate-500'}`}>
+        {isSelected && <span className="text-white text-[11px] font-black leading-none">✓</span>}
+      </div>
+    </div>
+  ) : null;
+
   // ── LIST 뷰 ──────────────────────────────────────────────────────────────
   if (viewMode === 'list') {
     return (
       <>
         {movePopup}
         <div {...longPressProps}
-          className="flex items-center gap-3 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl px-3 py-2.5 shadow-sm hover:shadow-md transition-all cursor-pointer active:scale-[0.99] group"
-          onClick={() => onEdit(note)}>
+          className="relative flex items-center gap-3 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl px-3 py-2.5 shadow-sm hover:shadow-md transition-all cursor-pointer active:scale-[0.99] group"
+          onClick={() => selectMode ? onSelect?.(note) : onEdit(note)}>
+        {selOverlay}
           {/* 썸네일 */}
           <div className="w-12 h-14 rounded-xl overflow-hidden shrink-0 border border-stone-200 dark:border-slate-700" style={{backgroundColor:bgColor}}>
             {note.dataUrl
@@ -222,7 +241,8 @@ export const NoteCard: React.FC<Props> = ({
         <div {...longPressProps}
           className="group relative rounded-xl overflow-hidden border border-stone-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-all cursor-pointer active:scale-[0.97] flex flex-col"
           style={{backgroundColor:bgColor}}
-          onClick={() => onEdit(note)}>
+          onClick={() => selectMode ? onSelect?.(note) : onEdit(note)}>
+          {selOverlay}
           <div className="relative aspect-[3/4] overflow-hidden">
             {note.dataUrl
               ? <img src={note.dataUrl} alt="" className="w-full h-full object-cover object-top" loading="lazy"/>
@@ -254,7 +274,8 @@ export const NoteCard: React.FC<Props> = ({
         <div {...longPressProps}
           className="group relative rounded-xl overflow-hidden border border-stone-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-all cursor-pointer active:scale-[0.97] flex flex-col"
           style={hasCover ? coverStyle : {backgroundColor:bgColor}}
-          onClick={() => onEdit(note)}>
+          onClick={() => selectMode ? onSelect?.(note) : onEdit(note)}>
+          {selOverlay}
           <div className="relative aspect-square overflow-hidden">
             {hasCover
               ? <div className="w-full h-full" style={coverStyle}/>
@@ -290,7 +311,8 @@ export const NoteCard: React.FC<Props> = ({
         <div {...longPressProps}
           className="group relative rounded-2xl overflow-hidden border border-stone-200 dark:border-slate-700 shadow-sm hover:shadow-lg transition-all cursor-pointer active:scale-[0.99] flex flex-col"
           style={{backgroundColor:bgColor}}
-          onClick={() => onEdit(note)}>
+          onClick={() => selectMode ? onSelect?.(note) : onEdit(note)}>
+          {selOverlay}
           <div className="relative aspect-[4/3] overflow-hidden">
             {note.dataUrl
               ? <img src={note.dataUrl} alt="" className="w-full h-full object-cover object-top" loading="lazy"/>
@@ -338,7 +360,8 @@ export const NoteCard: React.FC<Props> = ({
       <div {...longPressProps}
         className="group relative rounded-2xl overflow-hidden border border-stone-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-all cursor-pointer active:scale-[0.98] flex flex-col"
         style={{backgroundColor:bgColor}}
-        onClick={() => onEdit(note)}>
+        onClick={() => selectMode ? onSelect?.(note) : onEdit(note)}>
+        {selOverlay}
         <div className="relative aspect-[3/4] overflow-hidden">
           {hasCover
             ? <div className="w-full h-full" style={coverStyle}/>

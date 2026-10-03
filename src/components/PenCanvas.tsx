@@ -70,6 +70,12 @@ interface Props {
   // 페이지 병합
   allNotes?: PenNote[];
   onMergePages?: (sourcePageIdxes: number[], targetNoteId: string, insertAfter: number) => Promise<void>;
+  onCopyPages?: (sourcePageIdxes: number[], targetNoteId: string, insertAfter: number) => Promise<void>;
+  clipboardStrokes?: Stroke[];
+  onCutStrokes?: (strokes: Stroke[]) => void;
+  onCopyStrokes?: (strokes: Stroke[]) => void;
+  // 새 노트(미저장) 탭 복귀 시 복원할 스트로크
+  initialPageStrokes?: SavedStroke[][];
 }
 
 // 페이지 데이터 (bgImageUrl 제거 — PDF는 pdfDocRef + 메모리 캐시로 처리)
@@ -334,6 +340,11 @@ export const PenCanvas: React.FC<Props> = ({
   onPageChange,
   allNotes,
   onMergePages,
+  onCopyPages,
+  clipboardStrokes,
+  onCutStrokes,
+  onCopyStrokes,
+  initialPageStrokes,
 }) => {
   const baseCanvasRef   = useRef<HTMLCanvasElement | null>(null);
   const activeCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -367,6 +378,28 @@ export const PenCanvas: React.FC<Props> = ({
   const [eraserType,        setEraserType]        = useState<'stroke'|'area'>('stroke');
   const [eraserSize,        setEraserSize]        = useState(20); // 지우개 반경 (px)
   const [autoReturnPen,     setAutoReturnPen]     = useState(true);
+  // ── 선택 도구 ─────────────────────────────────────────────────────────────
+  const [isSelectTool,     setIsSelectTool]      = useState(false);
+  const [selectSubMode,    setSelectSubMode]      = useState<'rect'|'lasso'>('rect');
+  const [selDrawing,       setSelDrawing]         = useState(false);
+  const [selRect,          setSelRect]            = useState<{x:number;y:number;w:number;h:number}|null>(null);
+  const [lassoPoints,      setLassoPoints]        = useState<{x:number;y:number}[]>([]);
+  const [selectedIds,      setSelectedIds]        = useState<Set<string>>(new Set());
+  const [selBBox,          setSelBBox]            = useState<{x:number;y:number;w:number;h:number}|null>(null);
+  const [isDraggingSel,    setIsDraggingSel]      = useState(false);
+  const isDraggingSelRef   = useRef(false);
+  const selStartRef        = useRef<{x:number;y:number}|null>(null);
+  const selDragStartRef    = useRef<{cx:number;cy:number;strokes:Stroke[]}|null>(null);
+  const selectionCanvasRef = useRef<HTMLCanvasElement|null>(null);
+  const selIdsRef          = useRef<Set<string>>(new Set());   // selectedIds의 최신 mirror
+  const selBBoxRef         = useRef<{x:number;y:number;w:number;h:number}|null>(null);
+  const selectSubModeRef   = useRef<'rect'|'lasso'>('rect');
+  const lassoPointsRef     = useRef<{x:number;y:number}[]>([]);
+  const selLassoRef        = useRef<{x:number;y:number}[]>([]); // 선택 완료 후 라쏘 폴리곤 유지
+  // ── 선택 박스 리사이즈 ─────────────────────────────────────────────────────
+  const isResizingSelRef   = useRef(false);
+  const resizeCornerRef    = useRef<'tl'|'tr'|'bl'|'br'|null>(null);
+  const resizeBBoxStartRef = useRef<{x:number;y:number;w:number;h:number}|null>(null);
   const [penOnlyMode,       setPenOnlyMode]       = useState(true);
   const [showLines,         setShowLines]         = useState(true);
   const [lineSpacing,       setLineSpacing]       = useState(30);
@@ -403,6 +436,7 @@ export const PenCanvas: React.FC<Props> = ({
   const [mergeSelPages,    setMergeSelPages]    = useState<number[]>([]);  // source page indexes
   const [mergeInsertAfter, setMergeInsertAfter] = useState<number>(-1); // -1 = 맨 앞
   const [mergeLoading,     setMergeLoading]     = useState(false);
+  const [mergeCopyMode,    setMergeCopyMode]    = useState(false); // false=이동, true=복사
 
   // ── 검색어 하이라이트 (캔버스 오버레이) ────────────────────────────────────
   const [searchHighlights, setSearchHighlights] = useState<{x:number;y:number;w:number;h:number}[]>([]);
@@ -511,6 +545,7 @@ export const PenCanvas: React.FC<Props> = ({
     paperType: initPT as 'white'|'yellow'|'black', showLines: true, lineSpacing: 30,
     zoomEnabled: false,
     hlOpacity: 0.38, hlStraight: true,
+    isSelectTool: false,
     pages: [] as Page[],
     editingNoteId: undefined as string | undefined,
     editingNote:   null as PenNote | null,
@@ -531,6 +566,11 @@ export const PenCanvas: React.FC<Props> = ({
   live.current.zoomEnabled        = zoomEnabled;
   live.current.hlOpacity          = hlOpacity;
   live.current.hlStraight         = hlStraight;
+  live.current.isSelectTool       = isSelectTool;
+  selIdsRef.current               = selectedIds;   // 포인터 핸들러용 최신 mirror
+  selBBoxRef.current              = selBBox;
+  selectSubModeRef.current        = selectSubMode;
+  // lassoPointsRef은 setLassoPoints 호출 시 동기 업데이트
   live.current.pages              = pages;          // 자동저장용
   live.current.editingNoteId      = editingNote?.id; // 자동저장용
   live.current.editingNote        = editingNote;     // 오프라인 검색용
@@ -552,6 +592,120 @@ export const PenCanvas: React.FC<Props> = ({
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cssW, y); ctx.stroke();
       }
     }
+  }, []);
+
+  // ── 선택 도구 헬퍼 ──────────────────────────────────────────────────────
+  const strokeBBoxCalc = (strokes: Stroke[]) => {
+    if (!strokes.length) return null;
+    let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+    for (const s of strokes) for (const p of s.points) {
+      if (p.x<minX) minX=p.x; if (p.y<minY) minY=p.y;
+      if (p.x>maxX) maxX=p.x; if (p.y>maxY) maxY=p.y;
+    }
+    const pad=24;
+    return {x:minX-pad, y:minY-pad, w:maxX-minX+pad*2, h:maxY-minY+pad*2};
+  };
+  // 획의 포인트 과반수 이상이 rect 안에 있어야 선택 (라쏘와 동일 기준)
+  const strokeHitsRect = (s: Stroke, r:{x:number;y:number;w:number;h:number}) => {
+    const pts = s.points;
+    if (!pts.length) return false;
+    const inside = pts.filter(p=>p.x>=r.x&&p.x<=r.x+r.w&&p.y>=r.y&&p.y<=r.y+r.h).length;
+    return inside * 2 >= pts.length;
+  };
+  const ptInPoly = (px:number,py:number,poly:{x:number;y:number}[]) => {
+    let inside=false;
+    for (let i=0,j=poly.length-1;i<poly.length;j=i++) {
+      const {x:xi,y:yi}=poly[i],{x:xj,y:yj}=poly[j];
+      if(((yi>py)!==(yj>py))&&(px<(xj-xi)*(py-yi)/(yj-yi)+xi)) inside=!inside;
+    }
+    return inside;
+  };
+  // 라쏘: 포인트 과반수 이상이 폴리곤 안에 있어야 선택 (정확도 우선)
+  const strokeHitsLasso = (s:Stroke,poly:{x:number;y:number}[]) => {
+    const pts=s.points;
+    if(!pts.length) return false;
+    const inside=pts.filter(p=>ptInPoly(p.x,p.y,poly)).length;
+    return inside*2>=pts.length; // 50% 이상
+  };
+
+  const drawSelectionOverlay = useCallback((
+    rect:{x:number;y:number;w:number;h:number}|null,
+    lasso:{x:number;y:number}[],
+    bbox:{x:number;y:number;w:number;h:number}|null,
+    hasSelection:boolean,
+  ) => {
+    const sc=selectionCanvasRef.current; if(!sc) return;
+    const ctx=sc.getContext('2d')!;
+    const dpr=Math.min(window.devicePixelRatio||1,2);
+    // 전체 클리어는 물리 픽셀 기준
+    ctx.clearRect(0,0,sc.width,sc.height);
+    // CSS 픽셀 좌표로 그리기 위해 dpr 스케일 적용
+    ctx.save();
+    ctx.scale(dpr,dpr);
+    if (rect) {
+      ctx.save(); ctx.strokeStyle='#3b82f6'; ctx.lineWidth=1.5; ctx.setLineDash([6,4]);
+      ctx.strokeRect(rect.x,rect.y,rect.w,rect.h);
+      ctx.fillStyle='rgba(59,130,246,0.06)'; ctx.fillRect(rect.x,rect.y,rect.w,rect.h);
+      ctx.restore();
+    }
+    if (lasso.length>1) {
+      ctx.save(); ctx.strokeStyle='#3b82f6'; ctx.lineWidth=1.5; ctx.setLineDash([6,4]);
+      ctx.beginPath(); ctx.moveTo(lasso[0].x,lasso[0].y);
+      lasso.forEach(p=>ctx.lineTo(p.x,p.y)); ctx.closePath(); ctx.stroke();
+      ctx.fillStyle='rgba(59,130,246,0.06)'; ctx.fill(); ctx.restore();
+    }
+    if (bbox&&hasSelection) {
+      ctx.save();
+      // 라쏘 선택이면 라쏘 윤곽선, 아니면 bbox 사각형
+      if (lasso.length>1) {
+        ctx.strokeStyle='#3b82f6'; ctx.lineWidth=1.5; ctx.setLineDash([6,4]);
+        ctx.beginPath(); ctx.moveTo(lasso[0].x,lasso[0].y);
+        lasso.forEach(p=>ctx.lineTo(p.x,p.y)); ctx.closePath(); ctx.stroke();
+        ctx.fillStyle='rgba(59,130,246,0.04)'; ctx.fill();
+        ctx.setLineDash([]);
+      } else {
+        ctx.strokeStyle='#3b82f6'; ctx.lineWidth=1.5; ctx.setLineDash([8,4]);
+        ctx.strokeRect(bbox.x,bbox.y,bbox.w,bbox.h); ctx.setLineDash([]);
+      }
+      // 4 코너 핸들 (리사이즈용)
+      [[bbox.x,bbox.y],[bbox.x+bbox.w,bbox.y],[bbox.x,bbox.y+bbox.h],[bbox.x+bbox.w,bbox.y+bbox.h]].forEach(([hx,hy])=>{
+        ctx.fillStyle='#fff'; ctx.fillRect(hx-5,hy-5,10,10);
+        ctx.strokeStyle='#3b82f6'; ctx.lineWidth=1.5; ctx.setLineDash([]); ctx.strokeRect(hx-5,hy-5,10,10);
+      });
+      // 4방향 이동 화살표 (각 변 중앙)
+      const mx=bbox.x+bbox.w/2, my=bbox.y+bbox.h/2;
+      const AS=7, GAP=14; // 화살표 크기, bbox에서의 거리
+      const drawArrow=(ax:number,ay:number,dir:'u'|'d'|'l'|'r')=>{
+        ctx.save();
+        // 흰 원 배경
+        ctx.fillStyle='rgba(255,255,255,0.9)';
+        ctx.beginPath(); ctx.arc(ax,ay,AS+3,0,Math.PI*2); ctx.fill();
+        ctx.strokeStyle='#93c5fd'; ctx.lineWidth=1; ctx.stroke();
+        // 파란 삼각형 화살표
+        ctx.fillStyle='#3b82f6'; ctx.beginPath();
+        if(dir==='u'){ctx.moveTo(ax,ay-AS);ctx.lineTo(ax-AS*0.6,ay+AS*0.4);ctx.lineTo(ax+AS*0.6,ay+AS*0.4);}
+        if(dir==='d'){ctx.moveTo(ax,ay+AS);ctx.lineTo(ax-AS*0.6,ay-AS*0.4);ctx.lineTo(ax+AS*0.6,ay-AS*0.4);}
+        if(dir==='l'){ctx.moveTo(ax-AS,ay);ctx.lineTo(ax+AS*0.4,ay-AS*0.6);ctx.lineTo(ax+AS*0.4,ay+AS*0.6);}
+        if(dir==='r'){ctx.moveTo(ax+AS,ay);ctx.lineTo(ax-AS*0.4,ay-AS*0.6);ctx.lineTo(ax-AS*0.4,ay+AS*0.6);}
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+      };
+      drawArrow(mx, bbox.y-GAP, 'u');
+      drawArrow(mx, bbox.y+bbox.h+GAP, 'd');
+      drawArrow(bbox.x-GAP, my, 'l');
+      drawArrow(bbox.x+bbox.w+GAP, my, 'r');
+      ctx.restore();
+    }
+    ctx.restore();
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set()); setSelBBox(null); setSelRect(null);
+    setLassoPoints([]); setSelDrawing(false);
+    selLassoRef.current = [];
+    isResizingSelRef.current = false; resizeCornerRef.current = null; resizeBBoxStartRef.current = null;
+    const sc=selectionCanvasRef.current;
+    if(sc){const ctx=sc.getContext('2d')!;ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,sc.width,sc.height);}
   }, []);
 
   // ── Redraw ─────────────────────────────────────────────────────────────
@@ -802,6 +956,53 @@ export const PenCanvas: React.FC<Props> = ({
     return lib;
   };
 
+  // ── 선택 캔버스 크기 동기화 ─────────────────────────────────────────────
+  useEffect(() => {
+    const base = baseCanvasRef.current;
+    const sel = selectionCanvasRef.current;
+    if (!base || !sel) return;
+    const sync = () => { sel.width = base.width; sel.height = base.height; };
+    const obs = new ResizeObserver(sync);
+    obs.observe(base);
+    sync();
+    return () => obs.disconnect();
+  }, []);
+
+  // ── 백그라운드/화면 꺼짐 시 pending 자동저장 즉시 flush ──────────────────
+  useEffect(() => {
+    if (!onAutoSave) return;
+
+    const flushAutoSave = () => {
+      if (!autoSaveTimerRef.current) return; // 대기 중인 저장 없으면 skip
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = undefined;
+      const allStrokes = live.current.pages.map((pg: any, i: number) =>
+        i === live.current.pageIdx ? [...strokesRef.current] : [...pg.strokes]
+      );
+      onAutoSave(live.current.editingNoteId, allStrokes);
+    };
+
+    // 웹 표준: 탭 비활성/화면 꺼짐
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flushAutoSave(); };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    // Capacitor Android: 앱이 백그라운드로 가는 순간
+    let capListener: { remove: () => void } | null = null;
+    try {
+      const Cap = (window as any).Capacitor;
+      if (Cap?.Plugins?.App) {
+        Cap.Plugins.App.addListener('appStateChange', (state: { isActive: boolean }) => {
+          if (!state.isActive) flushAutoSave();
+        }).then((l: { remove: () => void }) => { capListener = l; });
+      }
+    } catch {}
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      capListener?.remove();
+    };
+  }, [onAutoSave]);
+
   // ── Load editing note ───────────────────────────────────────────────────
   useEffect(() => {
     // PDF 자동저장 직후 onSave가 editingNote 업데이트를 트리거하면 재초기화 방지
@@ -946,6 +1147,18 @@ export const PenCanvas: React.FC<Props> = ({
         const img = new Image(); img.crossOrigin = 'anonymous';
         img.onload = () => { baseImageRef.current = img; redrawBase(); };
         img.src = editingNote.dataUrl;
+      } else if (initialPageStrokes && initialPageStrokes.some(p => p.length > 0)) {
+        // editingNote 없지만 이 탭에서 이전에 그렸던 스트로크가 임시 보관돼 있을 때 복원
+        const restored: Page[] = initialPageStrokes.map((s, i) => ({
+          id: `p${i + 1}`,
+          strokes: s as Stroke[],
+        }));
+        const startPage = Math.min(initialPageIdx ?? 0, restored.length - 1);
+        setPages(restored);
+        setPageIdx(startPage);
+        strokesRef.current = (restored[startPage]?.strokes ?? []) as Stroke[];
+        baseImageRef.current = null;
+        redrawBase();
       } else {
         setPages([{ id: 'p1', strokes: [] }]);
         setPageIdx(0);
@@ -1347,9 +1560,60 @@ export const PenCanvas: React.FC<Props> = ({
     const onDown = (e: PointerEvent) => {
       const { penOnlyMode: pom, penColor: pc, penSize: ps, penType: pt,
               fountainIntensity: fi, isEraser: ie, eraserType: et, eraserSize: es,
-              hlOpacity: hlo, hlStraight: hls } = live.current;
+              hlOpacity: hlo, hlStraight: hls, isSelectTool: ist } = live.current;
       if (pom && e.pointerType === 'touch') return;
       e.preventDefault();
+
+      // ── 선택 도구 다운 ──────────────────────────────────────────────────
+      if (ist) {
+        const rect = cachedRectRef.current || target.getBoundingClientRect();
+        const xs = canvasXformRef.current.scale;
+        const cx = (e.clientX - rect.left) / xs;
+        const cy = (e.clientY - rect.top) / xs;
+        const bbox = selBBoxRef.current;
+        // ── 코너 리사이즈 감지 (14px 화면 픽셀 반경)
+        const hitR = 14 / xs;
+        if (bbox && selIdsRef.current.size > 0) {
+          const corners = [
+            {id:'tl' as const, x:bbox.x,       y:bbox.y},
+            {id:'tr' as const, x:bbox.x+bbox.w, y:bbox.y},
+            {id:'bl' as const, x:bbox.x,       y:bbox.y+bbox.h},
+            {id:'br' as const, x:bbox.x+bbox.w, y:bbox.y+bbox.h},
+          ];
+          const hitCorner = corners.find(c => Math.hypot(cx-c.x, cy-c.y) < hitR);
+          if (hitCorner) {
+            isResizingSelRef.current = true;
+            resizeCornerRef.current = hitCorner.id;
+            resizeBBoxStartRef.current = {...bbox};
+            try { target.setPointerCapture(e.pointerId); } catch {}
+            return;
+          }
+          // bbox 내부 클릭 → 이동
+          if (cx>=bbox.x && cx<=bbox.x+bbox.w && cy>=bbox.y && cy<=bbox.y+bbox.h) {
+            isDraggingSelRef.current = true;
+            setIsDraggingSel(true);
+            selLassoRef.current = []; // 이동 시작 시 라쏘 클리어
+            selDragStartRef.current = {
+              cx, cy,
+              strokes: strokesRef.current.map(s => ({...s, points: s.points.map(p => ({...p}))})),
+            };
+            try { target.setPointerCapture(e.pointerId); } catch {}
+            return;
+          }
+        }
+        {
+          // 새 선택 시작
+          setSelectedIds(new Set()); selIdsRef.current = new Set();
+          setSelBBox(null); selBBoxRef.current = null;
+          selLassoRef.current = [];
+          selStartRef.current = {x:cx, y:cy};
+          if (selectSubModeRef.current === 'lasso') setLassoPoints([{x:cx,y:cy}]);
+          setSelDrawing(true);
+        }
+        try { target.setPointerCapture(e.pointerId); } catch {}
+        return;
+      }
+
       try { target.setPointerCapture(e.pointerId); } catch {}
       const rect = target.getBoundingClientRect();
       cachedRectRef.current = rect;
@@ -1393,6 +1657,63 @@ export const PenCanvas: React.FC<Props> = ({
     };
 
     const onMove = (e: PointerEvent) => {
+      // ── 선택 도구 무브 ──────────────────────────────────────────────────
+      if (live.current.isSelectTool) {
+        const rect = cachedRectRef.current || target.getBoundingClientRect();
+        const xs = canvasXformRef.current.scale;
+        const cx = (e.clientX - rect.left) / xs;
+        const cy = (e.clientY - rect.top) / xs;
+        // ── 리사이즈 무브 ─────────────────────────────────────────────────
+        if (isResizingSelRef.current && resizeCornerRef.current && resizeBBoxStartRef.current) {
+          const orig = resizeBBoxStartRef.current;
+          let nb:{x:number;y:number;w:number;h:number};
+          switch(resizeCornerRef.current) {
+            case 'tl': nb={x:Math.min(cx,orig.x+orig.w-4), y:Math.min(cy,orig.y+orig.h-4), w:orig.x+orig.w-Math.min(cx,orig.x+orig.w-4), h:orig.y+orig.h-Math.min(cy,orig.y+orig.h-4)}; break;
+            case 'tr': nb={x:orig.x, y:Math.min(cy,orig.y+orig.h-4), w:Math.max(cx-orig.x,4), h:orig.y+orig.h-Math.min(cy,orig.y+orig.h-4)}; break;
+            case 'bl': nb={x:Math.min(cx,orig.x+orig.w-4), y:orig.y, w:orig.x+orig.w-Math.min(cx,orig.x+orig.w-4), h:Math.max(cy-orig.y,4)}; break;
+            case 'br': default: nb={x:orig.x, y:orig.y, w:Math.max(cx-orig.x,4), h:Math.max(cy-orig.y,4)}; break;
+          }
+          setSelBBox(nb); selBBoxRef.current = nb;
+          drawSelectionOverlay(null, selLassoRef.current, nb, true);
+          return;
+        }
+        // ── 이동 무브 ────────────────────────────────────────────────────
+        if (isDraggingSelRef.current && selDragStartRef.current) {
+          const dx = cx - selDragStartRef.current.cx;
+          const dy = cy - selDragStartRef.current.cy;
+          const ids = selIdsRef.current;
+          strokesRef.current = strokesRef.current.map(s => {
+            if (!ids.has(s.id)) return s;
+            const orig = selDragStartRef.current!.strokes.find(os => os.id === s.id);
+            if (!orig) return s;
+            return {...s, points: orig.points.map(p => ({...p, x:p.x+dx, y:p.y+dy}))};
+          });
+          redrawBase();
+          const selStrokes = strokesRef.current.filter(s => ids.has(s.id));
+          const nb = strokeBBoxCalc(selStrokes);
+          setSelBBox(nb); selBBoxRef.current = nb;
+          drawSelectionOverlay(null, selLassoRef.current, nb, true); // 라쏘 윤곽선 유지
+          return;
+        }
+        if (selStartRef.current) {
+          if (selectSubModeRef.current === 'rect') {
+            const r = {
+              x: Math.min(selStartRef.current.x, cx),
+              y: Math.min(selStartRef.current.y, cy),
+              w: Math.abs(cx - selStartRef.current.x),
+              h: Math.abs(cy - selStartRef.current.y),
+            };
+            setSelRect(r);
+            drawSelectionOverlay(r, [], null, false);
+          } else {
+            // 라쏘: state 업데이트 없이 ref + 직접 draw → 실시간으로 손/마우스 경로 그대로 따라감
+            lassoPointsRef.current = [...lassoPointsRef.current, {x:cx, y:cy}];
+            drawSelectionOverlay(null, lassoPointsRef.current, null, false);
+          }
+        }
+        return;
+      }
+
       if (!isDrawingRef.current) return;
       const { penOnlyMode: pom, penColor: pc, penSize: ps, penType: pt,
               fountainIntensity: fi, isEraser: ie, eraserType: et, eraserSize: es } = live.current;
@@ -1439,6 +1760,83 @@ export const PenCanvas: React.FC<Props> = ({
     };
 
     const onUp = (e: PointerEvent) => {
+      // ── 선택 도구 업 ────────────────────────────────────────────────────
+      if (live.current.isSelectTool) {
+        try { target.releasePointerCapture(e.pointerId); } catch {}
+        // ── 리사이즈 완료: 새 bbox로 hit-test 재실행 ───────────────────
+        if (isResizingSelRef.current) {
+          isResizingSelRef.current = false;
+          resizeCornerRef.current = null;
+          resizeBBoxStartRef.current = null;
+          const newBBox = selBBoxRef.current;
+          if (newBBox) {
+            const hits = strokesRef.current.filter(s => strokeHitsRect(s, newBBox));
+            if (hits.length > 0) {
+              const ids = new Set(hits.map(s => s.id));
+              setSelectedIds(ids); selIdsRef.current = ids;
+              // 리사이즈 후에도 사용자가 조정한 사각형 자체를 bbox로 유지
+              drawSelectionOverlay(null, selLassoRef.current, newBBox, true);
+            } else {
+              clearSelection();
+            }
+          }
+          return;
+        }
+        // ── 이동 완료 ────────────────────────────────────────────────────
+        if (isDraggingSelRef.current) {
+          isDraggingSelRef.current = false;
+          setIsDraggingSel(false);
+          selDragStartRef.current = null;
+          const updatedStrokes = [...strokesRef.current];
+          setPages(prev => prev.map((pg,i) => i===live.current.pageIdx ? {...pg, strokes:updatedStrokes} : pg));
+          return;
+        }
+        // ── 선택 완료 ────────────────────────────────────────────────────
+        setSelDrawing(false);
+        const rect = cachedRectRef.current || target.getBoundingClientRect();
+        const xs = canvasXformRef.current.scale;
+        const cx = (e.clientX - rect.left) / xs;
+        const cy = (e.clientY - rect.top) / xs;
+        const allStrokes = strokesRef.current;
+        let hits: Stroke[];
+        const sr = selRect ?? (selStartRef.current ? {
+          x: Math.min(selStartRef.current.x, cx), y: Math.min(selStartRef.current.y, cy),
+          w: Math.abs(cx - selStartRef.current.x), h: Math.abs(cy - selStartRef.current.y),
+        } : null);
+        if (selectSubModeRef.current === 'rect' && sr && sr.w > 2 && sr.h > 2) {
+          hits = allStrokes.filter(s => strokeHitsRect(s, sr));
+          selLassoRef.current = [];
+        } else if (selectSubModeRef.current === 'lasso' && lassoPointsRef.current.length > 2) {
+          const poly = [...lassoPointsRef.current];
+          hits = allStrokes.filter(s => strokeHitsLasso(s, poly));
+          selLassoRef.current = poly; // 라쏘 폴리곤 유지 (시각적 표시용)
+          lassoPointsRef.current = [];
+          setLassoPoints([]);
+        } else {
+          hits = []; selLassoRef.current = [];
+        }
+        if (hits.length > 0) {
+          const ids = new Set(hits.map(s => s.id));
+          setSelectedIds(ids); selIdsRef.current = ids;
+          // rect 모드: 내가 그린 사각형 자체를 선택 박스로 유지 (스트로크 범위로 확장 안 함)
+          // lasso 모드: 선택된 획의 실제 bbox 사용
+          const bb = (selectSubModeRef.current === 'rect' && sr)
+            ? sr
+            : strokeBBoxCalc(hits);
+          setSelBBox(bb); selBBoxRef.current = bb;
+          setSelRect(null);
+          drawSelectionOverlay(null, selLassoRef.current, bb, true);
+        } else {
+          setSelectedIds(new Set()); selIdsRef.current = new Set();
+          setSelBBox(null); selBBoxRef.current = null;
+          setSelRect(null); selLassoRef.current = [];
+          const sc = selectionCanvasRef.current;
+          if (sc) { const ctx = sc.getContext('2d')!; ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,sc.width,sc.height); }
+        }
+        selStartRef.current = null;
+        return;
+      }
+
       const { penOnlyMode: pom, autoReturnPen: arp, pageIdx: ci } = live.current;
       if (pom && e.pointerType === 'touch') return;
       if (!isDrawingRef.current) return;
@@ -1479,7 +1877,7 @@ export const PenCanvas: React.FC<Props> = ({
         const base = baseCanvasRef.current;
         if (base && !activeLayerHiddenRef.current) drawStroke(stroke, base.getContext('2d')!);
         clearActive();
-        // 자동 저장 (탭 전환 시 손글씨 유지) — 1.5초 디바운스
+        // 자동 저장 (탭 전환 시 손글씨 유지) — 500ms 디바운스
         if (onAutoSave) {
           clearTimeout(autoSaveTimerRef.current);
           autoSaveTimerRef.current = setTimeout(() => {
@@ -1487,7 +1885,7 @@ export const PenCanvas: React.FC<Props> = ({
               i === live.current.pageIdx ? [...strokesRef.current] : [...pg.strokes]
             );
             onAutoSave(live.current.editingNoteId, allStrokes);
-          }, 1500);
+          }, 500);
         }
       }
       if (live.current.isEraser && arp) setIsEraser(false);
@@ -1780,6 +2178,48 @@ export const PenCanvas: React.FC<Props> = ({
     const canvasH = containerRef.current?.clientHeight || 1600;
     return { dataUrl, allPageStrokes, penLayersToSave, activeLayerIdToSave, canvasW, canvasH };
   };
+
+  // ── 선택 도구 액션 ───────────────────────────────────────────────────────
+  const handleCutSel = useCallback(() => {
+    const cut = strokesRef.current.filter(s => selectedIds.has(s.id));
+    if (onCutStrokes) onCutStrokes(cut);
+    strokesRef.current = strokesRef.current.filter(s => !selectedIds.has(s.id));
+    setPages(prev => prev.map((pg,i) => i===live.current.pageIdx ? {...pg, strokes:strokesRef.current} : pg));
+    redrawBase(); clearSelection();
+  }, [selectedIds, onCutStrokes, clearSelection, redrawBase]);
+
+  const handleCopySel = useCallback(() => {
+    const copied = strokesRef.current.filter(s => selectedIds.has(s.id));
+    if (onCopyStrokes) onCopyStrokes(copied);
+    clearSelection();
+  }, [selectedIds, onCopyStrokes, clearSelection]);
+
+  const handleDeleteSel = useCallback(() => {
+    strokesRef.current = strokesRef.current.filter(s => !selectedIds.has(s.id));
+    setPages(prev => prev.map((pg,i) => i===live.current.pageIdx ? {...pg, strokes:strokesRef.current} : pg));
+    redrawBase(); clearSelection();
+  }, [selectedIds, clearSelection, redrawBase]);
+
+  const handlePaste = useCallback(() => {
+    if (!clipboardStrokes?.length) return;
+    const offset = 30;
+    const pasted = clipboardStrokes.map(s => ({
+      ...s,
+      id: `s-${Date.now()}-${Math.random()}`,
+      points: s.points.map((p: Point) => ({...p, x:p.x+offset, y:p.y+offset})),
+    }));
+    strokesRef.current = [...strokesRef.current, ...pasted];
+    setPages(prev => prev.map((pg,i) => i===live.current.pageIdx ? {...pg, strokes:strokesRef.current} : pg));
+    redrawBase();
+    const ids = new Set(pasted.map((s: Stroke) => s.id));
+    setSelectedIds(ids); selIdsRef.current = ids;
+    const bb = strokeBBoxCalc(pasted);
+    setSelBBox(bb); selBBoxRef.current = bb;
+    if (bb) drawSelectionOverlay(null,[],bb,true);
+    // 붙인 즉시 선택 도구로 전환 → 바로 드래그로 이동 가능
+    setIsSelectTool(true);
+    live.current.isSelectTool = true;
+  }, [clipboardStrokes, redrawBase, drawSelectionOverlay]);
 
   // ── Save (OCR 없음 — 빠른 저장) ──────────────────────────────────────────
   const handleSave = async () => {
@@ -2787,6 +3227,33 @@ export const PenCanvas: React.FC<Props> = ({
             )}
           </div>
 
+          {/* ── 선택 도구 ── */}
+          <div className="flex items-center gap-0.5 ml-0.5">
+            <button type="button" title="선택/이동"
+              onClick={() => {
+                const next = !isSelectTool;
+                setIsSelectTool(next);
+                live.current.isSelectTool = next;
+                if (!next) clearSelection();
+                if (next) { setIsEraser(false); live.current.isEraser = false; }
+              }}
+              className={`px-1.5 py-1.5 md:px-2 md:py-2 cursor-pointer active:scale-95 shrink-0 rounded-lg ${isSelectTool?'text-blue-400 bg-blue-500/20':'text-white/40 hover:text-white/80'}`}>
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <rect x="2" y="2" width="14" height="14" rx="2" strokeDasharray="4 2"/>
+              </svg>
+            </button>
+            {isSelectTool && (
+              <div className="flex gap-0.5">
+                <button type="button" title="사각형 선택"
+                  onClick={() => { setSelectSubMode('rect'); selectSubModeRef.current='rect'; }}
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-black cursor-pointer ${selectSubMode==='rect'?'bg-blue-600 text-white':'bg-white/10 text-white/50'}`}>□</button>
+                <button type="button" title="올가미 선택"
+                  onClick={() => { setSelectSubMode('lasso'); selectSubModeRef.current='lasso'; }}
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-black cursor-pointer ${selectSubMode==='lasso'?'bg-blue-600 text-white':'bg-white/10 text-white/50'}`}>∿</button>
+              </div>
+            )}
+          </div>
+
           <div className="w-px h-4 bg-white/15 mx-1 shrink-0"/>
 
           {/* ── 종이 설정 (Settings 패널 토글) ── */}
@@ -3125,6 +3592,9 @@ export const PenCanvas: React.FC<Props> = ({
             style={{touchAction:'none', userSelect:'none', willChange:'transform'}}/>
           <canvas ref={activeCanvasRef} className="absolute inset-0 w-full h-full block"
             style={{touchAction:'none', userSelect:'none', willChange:'transform', background:'transparent'}}/>
+          {/* ── 선택 도구 오버레이 캔버스 ── */}
+          <canvas ref={selectionCanvasRef} className="absolute inset-0 w-full h-full block"
+            style={{touchAction:'none', userSelect:'none', pointerEvents:'none', background:'transparent'}}/>
           {/* ── 검색어 하이라이트 오버레이 ── */}
           {searchHighlights.map((box, i) => (
             <div key={i} style={{
@@ -3300,10 +3770,25 @@ export const PenCanvas: React.FC<Props> = ({
             <div className="bg-zinc-900 rounded-2xl p-5 w-80 max-w-[92vw] flex flex-col gap-4 shadow-2xl border border-white/10">
               <div className="flex items-center justify-between">
                 <span className="text-white font-black text-sm">페이지 병합</span>
-                <button type="button" onClick={() => setShowMergeModal(false)}
-                  className="text-white/40 hover:text-white cursor-pointer">
-                  <X className="w-4 h-4"/>
-                </button>
+                <div className="flex items-center gap-2">
+                  {/* 이동 / 복사 토글 */}
+                  <div className="flex rounded-lg overflow-hidden border border-white/15">
+                    <button type="button"
+                      onClick={() => setMergeCopyMode(false)}
+                      className={`px-2.5 py-1 text-[11px] font-black cursor-pointer ${!mergeCopyMode?'bg-purple-600 text-white':'text-white/40 hover:text-white/70'}`}>
+                      이동
+                    </button>
+                    <button type="button"
+                      onClick={() => setMergeCopyMode(true)}
+                      className={`px-2.5 py-1 text-[11px] font-black cursor-pointer ${mergeCopyMode?'bg-blue-600 text-white':'text-white/40 hover:text-white/70'}`}>
+                      복사
+                    </button>
+                  </div>
+                  <button type="button" onClick={() => setShowMergeModal(false)}
+                    className="text-white/40 hover:text-white cursor-pointer">
+                    <X className="w-4 h-4"/>
+                  </button>
+                </div>
               </div>
 
               {/* 원본 페이지 선택 */}
@@ -3376,20 +3861,69 @@ export const PenCanvas: React.FC<Props> = ({
               <button type="button"
                 disabled={mergeSelPages.length === 0 || !mergeTargetNote || mergeLoading}
                 onClick={async () => {
-                  if (!onMergePages || mergeSelPages.length === 0 || !mergeTargetNote) return;
+                  if (mergeSelPages.length === 0 || !mergeTargetNote) return;
                   setMergeLoading(true);
                   try {
-                    await onMergePages(mergeSelPages, mergeTargetNote, mergeInsertAfter);
+                    if (mergeCopyMode) {
+                      await onCopyPages?.(mergeSelPages, mergeTargetNote, mergeInsertAfter);
+                    } else {
+                      await onMergePages?.(mergeSelPages, mergeTargetNote, mergeInsertAfter);
+                    }
                     setShowMergeModal(false);
                   } finally {
                     setMergeLoading(false);
                   }
                 }}
                 className="w-full py-2.5 rounded-xl text-sm font-black cursor-pointer active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                style={{background: mergeSelPages.length > 0 && mergeTargetNote ? 'rgba(124,58,237,0.9)' : undefined, color:'#fff'}}>
-                {mergeLoading ? '이동 중...' : `${mergeSelPages.length}페이지 이동`}
+                style={{background: mergeSelPages.length > 0 && mergeTargetNote ? (mergeCopyMode ? 'rgba(37,99,235,0.9)' : 'rgba(124,58,237,0.9)') : undefined, color:'#fff'}}>
+                {mergeLoading
+                  ? (mergeCopyMode ? '복사 중...' : '이동 중...')
+                  : `${mergeSelPages.length}페이지 ${mergeCopyMode ? '복사' : '이동'}`}
               </button>
             </div>
+          </div>
+        )}
+
+        {/* ── 선택 도구 플로팅 메뉴 ───────────────────────────────────────── */}
+        {isSelectTool && selectedIds.size > 0 && selBBox && !isDraggingSel && (
+          <div style={{
+            position:'absolute',
+            left: Math.max(4, selBBox.x * canvasXform.scale + canvasXform.x),
+            top: Math.max(4, selBBox.y * canvasXform.scale + canvasXform.y - 52),
+            zIndex:70, pointerEvents:'auto',
+          }}>
+            <div className="flex items-center gap-1 rounded-xl px-2 py-1.5 shadow-xl"
+              style={{background:'rgba(24,24,27,0.96)', border:'1px solid rgba(255,255,255,0.1)', backdropFilter:'blur(8px)'}}>
+              <button type="button" onClick={handleCutSel}
+                className="px-2.5 py-1 rounded-lg text-xs font-black text-white hover:bg-white/10 cursor-pointer">
+                잘라내기
+              </button>
+              <div className="w-px h-4 bg-white/15"/>
+              <button type="button" onClick={handleCopySel}
+                className="px-2.5 py-1 rounded-lg text-xs font-black text-white hover:bg-white/10 cursor-pointer">
+                복사
+              </button>
+              <div className="w-px h-4 bg-white/15"/>
+              <button type="button" onClick={handleDeleteSel}
+                className="px-2.5 py-1 rounded-lg text-xs font-black text-red-400 hover:bg-white/10 cursor-pointer">
+                삭제
+              </button>
+              <div className="w-px h-4 bg-white/15"/>
+              <button type="button" onClick={clearSelection}
+                className="px-2.5 py-1 rounded-lg text-xs font-black text-white/40 hover:bg-white/10 cursor-pointer">
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
+        {/* 붙이기 버튼 — 클립보드에 획이 있으면 항상 표시 (선택 도구 불필요) */}
+        {!!clipboardStrokes?.length && selectedIds.size === 0 && (
+          <div style={{position:'absolute', bottom:80, right:16, zIndex:70, pointerEvents:'auto'}}>
+            <button type="button" onClick={handlePaste}
+              className="px-4 py-2.5 rounded-2xl text-sm font-black text-white shadow-xl cursor-pointer active:scale-95 transition-all"
+              style={{background:'rgba(124,58,237,0.9)'}}>
+              붙이기 ({clipboardStrokes.length}획)
+            </button>
           </div>
         )}
 

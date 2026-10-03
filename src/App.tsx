@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { FolderOpen, FolderPlus, X, ChevronRight, Tag } from 'lucide-react';
-import { PenNote, Folder, PenSettings, PenLayer } from './types';
+import { PenNote, Folder, PenSettings, PenLayer, WordBox } from './types';
 import { getAllNotes, saveNote, deleteNote, getFolders, saveFolder, deleteFolder } from './lib/storage';
 import { PenCanvas } from './components/PenCanvas';
 import { NoteList } from './components/NoteList';
@@ -22,8 +22,13 @@ export default function App() {
   const hasRestoredTabsRef            = useRef(false);
 
   // ── 탭 시스템 (localStorage 영속) ────────────────────────────────────────
-  const [openTabs,    setOpenTabs]    = useState<Array<{noteId:string|null; title:string; color:string; pageIdx:number; zoom?:{scale:number;x:number;y:number}}>>(() => {
-    try { const s = localStorage.getItem('damoa_open_tabs'); return s ? JSON.parse(s) : []; } catch { return []; }
+  const [openTabs,    setOpenTabs]    = useState<Array<{noteId:string|null; title:string; color:string; pageIdx:number; zoom?:{scale:number;x:number;y:number}; tabId:string}>>(() => {
+    try {
+      const s = localStorage.getItem('damoa_open_tabs');
+      const tabs = s ? JSON.parse(s) : [];
+      // tabId 없는 기존 탭에 고유 ID 부여 (하위 호환)
+      return tabs.map((t: any, i: number) => ({ ...t, tabId: t.tabId ?? `tab-legacy-${i}-${Date.now()}` }));
+    } catch { return []; }
   });
   const [activeTabIdx,setActiveTabIdx]= useState(() => {
     try { const s = localStorage.getItem('damoa_active_tab_idx'); return s ? parseInt(s, 10) : 0; } catch { return 0; }
@@ -113,7 +118,7 @@ export default function App() {
   const handleNew = () => {
     const color = TAB_PALETTE[openTabs.length % TAB_PALETTE.length];
     const newIdx = openTabs.length;
-    setOpenTabs(prev => [...prev, { noteId: null, title: '새 노트', color, pageIdx: 0 }]);
+    setOpenTabs(prev => [...prev, { noteId: null, title: '새 노트', color, pageIdx: 0, tabId: `tab-${Date.now()}-${Math.random().toString(36).slice(2)}` }]);
     setActiveTabIdx(newIdx);
     setEditingNote(null);
     setView('canvas');
@@ -133,7 +138,7 @@ export default function App() {
     }
     const color = TAB_PALETTE[openTabs.length % TAB_PALETTE.length];
     const newIdx = openTabs.length;
-    setOpenTabs(prev => [...prev, { noteId: note.id, title: note.title, color, pageIdx: 0 }]);
+    setOpenTabs(prev => [...prev, { noteId: note.id, title: note.title, color, pageIdx: 0, tabId: `tab-${Date.now()}-${Math.random().toString(36).slice(2)}` }]);
     setActiveTabIdx(newIdx);
     setEditingNote(note);
     setView('canvas');
@@ -221,17 +226,140 @@ export default function App() {
   // 탭을 유지하면서 목록으로 돌아가기 (탭 삭제 안 함)
   const handleBack = () => { setView('list'); };
 
+  // 새 노트(미저장) 탭의 스트로크 임시 보관소 (탭 전환 후 복원용)
+  const tempTabStrokesRef = useRef<Map<string, any[][]>>(new Map());
+  // handleAutoSave 안에서 stale closure 없이 최신 값 참조
+  const activeTabIdxRef = useRef(activeTabIdx);
+  useEffect(() => { activeTabIdxRef.current = activeTabIdx; }, [activeTabIdx]);
+  const openTabsRef = useRef(openTabs);
+  useEffect(() => { openTabsRef.current = openTabs; }, [openTabs]);
+
   // 스트로크 자동저장 (탭 전환 시 손글씨 유지)
   const handleAutoSave = useCallback(async (noteId: string | undefined, pageStrokes: any[][]) => {
-    if (!noteId) return; // 새 노트는 자동저장 안 함
-    const note = notes.find(n => n.id === noteId);
-    if (!note) return;
-    // notes 상태를 먼저 동기적으로 업데이트 → 목록에서 즉시 돌아와도 최신 스트로크 반영
-    const updatedNote = { ...note, pageStrokes, updatedAt: Date.now() };
-    setNotes(prev => prev.map(n => n.id === noteId ? updatedNote : n));
-    // IndexedDB 저장은 비동기로
-    await saveNote(updatedNote);
-  }, [notes]);
+    if (!noteId) {
+      // 새 노트: 임시 저장소에 보관 → 탭 복귀 시 initialPageStrokes로 복원
+      const tabId = openTabsRef.current[activeTabIdxRef.current]?.tabId;
+      if (tabId) tempTabStrokesRef.current.set(tabId, pageStrokes);
+      return;
+    }
+    let updatedNote: PenNote | undefined;
+    // setNotes functional updater로 stale closure 방지
+    setNotes(prev => {
+      const note = prev.find(n => n.id === noteId);
+      if (!note) return prev;
+      updatedNote = { ...note, pageStrokes, updatedAt: Date.now() };
+      return prev.map(n => n.id === noteId ? updatedNote! : n);
+    });
+    // IndexedDB 저장 — updatedNote는 setNotes 콜백 직후 동기적으로 세팅됨
+    if (updatedNote) await saveNote(updatedNote);
+  }, []); // notes 의존성 제거 → stale closure 없음
+
+  // ── 스트로크 클립보드 (잘라내기/복사/붙이기) ──────────────────────────────
+  const [clipboardStrokes, setClipboardStrokes] = useState<import('./types').SavedStroke[]>([]);
+
+  const handleCutStrokes = useCallback((strokes: import('./types').SavedStroke[]) => {
+    setClipboardStrokes(strokes);
+  }, []);
+
+  const handleCopyStrokes = useCallback((strokes: import('./types').SavedStroke[]) => {
+    setClipboardStrokes(strokes);
+  }, []);
+
+  // ── 배치 OCR ──────────────────────────────────────────────────────────────
+  const [batchOcrProgress, setBatchOcrProgress] = useState<{current:number;total:number;noteTitle:string}|null>(null);
+  const [batchOcrDone, setBatchOcrDone] = useState<{ok:number;fail:number}|null>(null);
+
+  const handleBatchOcr = useCallback(async (noteIds: string[]) => {
+    const visionApiKey = localStorage.getItem('damoa_vision_api_key') ?? '';
+    const geminiApiKey = localStorage.getItem('damoa_gemini_api_key') ?? '';
+    if (!visionApiKey && !geminiApiKey) {
+      alert('⚙️ 설정에서 Cloud Vision 또는 Gemini API 키를 먼저 입력해주세요.');
+      return;
+    }
+    const { extractHandwritingImage, runCloudVisionOcrFull } = await import('./lib/inkOcr');
+    const CANVAS_W = 1200, CANVAS_H = 1600, SCALE = 2;
+    let ok = 0, fail = 0;
+
+    for (let i = 0; i < noteIds.length; i++) {
+      const note = notes.find(n => n.id === noteIds[i]);
+      if (!note) continue;
+      setBatchOcrProgress({ current: i + 1, total: noteIds.length, noteTitle: note.title || '제목 없음' });
+
+      const pageStrokes = note.pageStrokes ?? [[]];
+      const pageOcrTexts: string[] = [];
+      const pageWordBoxes: WordBox[][] = [];
+
+      let noteFailed = false;
+      for (let pi = 0; pi < pageStrokes.length; pi++) {
+        const pg = pageStrokes[pi];
+        const existingText  = note.pageOcrTexts?.[pi] ?? '';
+        const existingBoxes = (note.pageWordBoxes?.[pi] ?? []) as WordBox[];
+        if (pg.length === 0) { pageOcrTexts.push(existingText); pageWordBoxes.push(existingBoxes); continue; }
+        try {
+          const imgBase64 = extractHandwritingImage(pg as any, CANVAS_W, CANVAS_H, SCALE);
+          if (visionApiKey) {
+            const { text, wordBoxes: wb } = await runCloudVisionOcrFull(imgBase64, visionApiKey, SCALE, CANVAS_W, CANVAS_H);
+            pageOcrTexts.push(text || existingText);
+            pageWordBoxes.push(wb.map(b => ({ text: b.text, x: b.xFrac, y: b.yFrac, w: b.wFrac, h: b.hFrac })));
+          } else {
+            // Gemini fallback (텍스트만, 바운딩 박스 없음)
+            const dataUrl = `data:image/jpeg;base64,${imgBase64}`;
+            const m = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
+            if (!m) { pageOcrTexts.push(existingText); pageWordBoxes.push(existingBoxes); continue; }
+            const res = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`,
+              { method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ contents:[{parts:[
+                  {text:'이 손글씨 이미지에 쓰여진 텍스트를 정확하게 인식하여 원본 그대로 출력해주세요. 줄바꿈 유지, 인식 텍스트만 출력.'},
+                  {inline_data:{mime_type:`image/${m[1]}`,data:m[2]}}
+                ]}], generationConfig:{maxOutputTokens:2048,temperature:0.1} }) }
+            );
+            if (!res.ok) throw new Error(`Gemini HTTP ${res.status}`);
+            const d = await res.json();
+            const text = d?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+            pageOcrTexts.push(text || existingText);
+            pageWordBoxes.push(existingBoxes);
+          }
+        } catch (e) {
+          console.warn('[damoa-pen] 배치 OCR 실패 페이지', pi, e);
+          pageOcrTexts.push(existingText); pageWordBoxes.push(existingBoxes);
+          noteFailed = true;
+        }
+      }
+
+      const ocrText = pageOcrTexts.filter(Boolean).join(' ');
+      try {
+        await saveNote({ ...note, ocrText, pageOcrTexts, pageWordBoxes, updatedAt: Date.now() });
+        if (!noteFailed) ok++; else fail++;
+      } catch { fail++; }
+    }
+
+    await loadNotes();
+    setBatchOcrProgress(null);
+    setBatchOcrDone({ ok, fail });
+  }, [notes, loadNotes]);
+
+  // ── 페이지 복사 (병합 모달 "복사" 모드) ───────────────────────────────────
+  const handleCopyPages = useCallback(async (
+    sourcePageIdxes: number[],
+    targetNoteId: string,
+    insertAfter: number,
+  ) => {
+    if (!editingNote) return;
+    const targetNote = notes.find(n => n.id === targetNoteId);
+    if (!targetNote) return;
+
+    const srcPages = editingNote.pageStrokes ?? [[]];
+    // 복사: 원본 삭제 없이 대상에만 삽입
+    const copiedPages = sourcePageIdxes.map(i => [...(srcPages[i] ?? [])]);
+
+    const tgtPages = [...(targetNote.pageStrokes ?? [[]])];
+    const insertIdx = insertAfter + 1;
+    tgtPages.splice(insertIdx, 0, ...copiedPages);
+
+    await saveNote({ ...targetNote, pageStrokes: tgtPages, updatedAt: Date.now() });
+    await loadNotes();
+  }, [editingNote, notes, loadNotes]);
 
   // 현재 탭의 페이지 위치 저장
   const handlePageChange = useCallback((pageIdx: number) => {
@@ -338,7 +466,7 @@ export default function App() {
   const handleOpenPdf = (file: File) => {
     const color = TAB_PALETTE[openTabs.length % TAB_PALETTE.length];
     const newIdx = openTabs.length;
-    setOpenTabs(prev => [...prev, { noteId: null, title: file.name.replace(/\.pdf$/i,''), color, pageIdx: 0 }]);
+    setOpenTabs(prev => [...prev, { noteId: null, title: file.name.replace(/\.pdf$/i,''), color, pageIdx: 0, tabId: `tab-${Date.now()}-${Math.random().toString(36).slice(2)}` }]);
     setActiveTabIdx(newIdx);
     setEditingNote(null);
     setPendingPdfFile(file);
@@ -374,6 +502,45 @@ export default function App() {
   return (
     <div className="h-dvh overflow-hidden bg-stone-50 dark:bg-slate-950 text-stone-900 dark:text-slate-100 flex">
       {isLocked && <LockScreen onUnlock={() => setIsLocked(false)}/>}
+
+      {/* ── 배치 OCR 진행 오버레이 ── */}
+      {batchOcrProgress && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-7 w-80 max-w-[90vw] flex flex-col items-center gap-4 shadow-2xl">
+            <div className="text-3xl animate-spin">✨</div>
+            <div className="text-base font-black text-stone-900 dark:text-slate-100 text-center">AI 인식 중...</div>
+            <div className="text-sm text-stone-500 dark:text-slate-400 text-center truncate max-w-full px-2">
+              {batchOcrProgress.noteTitle}
+            </div>
+            <div className="w-full bg-stone-200 dark:bg-slate-700 rounded-full h-2.5 overflow-hidden">
+              <div className="bg-purple-500 h-2.5 rounded-full transition-all duration-300"
+                style={{width:`${(batchOcrProgress.current/batchOcrProgress.total)*100}%`}}/>
+            </div>
+            <div className="text-xs font-black text-stone-500 dark:text-slate-400">
+              {batchOcrProgress.current} / {batchOcrProgress.total} 완료
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 배치 OCR 완료 알림 ── */}
+      {batchOcrDone && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onClick={() => setBatchOcrDone(null)}>
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-7 w-72 max-w-[90vw] flex flex-col items-center gap-3 shadow-2xl"
+            onClick={e => e.stopPropagation()}>
+            <div className="text-3xl">{batchOcrDone.fail === 0 ? '✅' : '⚠️'}</div>
+            <div className="text-base font-black text-stone-900 dark:text-slate-100">AI 인식 완료</div>
+            <div className="text-sm text-stone-500 dark:text-slate-400 text-center">
+              성공 {batchOcrDone.ok}개{batchOcrDone.fail > 0 ? ` · 실패 ${batchOcrDone.fail}개` : ''}
+            </div>
+            <button type="button" onClick={() => setBatchOcrDone(null)}
+              className="mt-1 px-6 py-2 bg-purple-600 hover:bg-purple-700 text-white font-black text-sm rounded-2xl cursor-pointer">
+              확인
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── 폴더 사이드패널 (list view 전용) ── */}
       {view === 'list' && (
@@ -504,11 +671,17 @@ export default function App() {
               darkMode={darkMode}
               searchQuery={listSearchQuery}
               onSearchQueryChange={setListSearchQuery}
+              onBatchOcr={handleBatchOcr}
             />
           </>
         ) : (
           <PenCanvas
+            key={`tab-${activeTabIdx}`}
             editingNote={editingNote}
+            initialPageStrokes={(() => {
+              const tabId = openTabs[activeTabIdx]?.tabId;
+              return tabId ? tempTabStrokesRef.current.get(tabId) : undefined;
+            })()}
             darkMode={darkMode}
             folders={folders}
             onSave={handleSave}
@@ -533,6 +706,10 @@ export default function App() {
             onPageChange={handlePageChange}
             allNotes={notes}
             onMergePages={handleMergePages}
+            clipboardStrokes={clipboardStrokes}
+            onCutStrokes={handleCutStrokes}
+            onCopyStrokes={handleCopyStrokes}
+            onCopyPages={handleCopyPages}
           />
         )}
       </div>

@@ -378,6 +378,10 @@ export const PenCanvas: React.FC<Props> = ({
   const [eraserType,        setEraserType]        = useState<'stroke'|'area'>('stroke');
   const [eraserSize,        setEraserSize]        = useState(20); // 지우개 반경 (px)
   const [autoReturnPen,     setAutoReturnPen]     = useState(true);
+  // 선택 도구 진입 전 이전 펜 상태 기억 (자동 복귀용)
+  const prevPenBeforeSelectRef = useRef<{penType: PenType; isEraser: boolean}>({penType:'fountain', isEraser:false});
+  // 형광펜 이전 펜 타입 기억
+  const prevPenBeforeHLRef = useRef<PenType>('fountain');
   // ── 선택 도구 ─────────────────────────────────────────────────────────────
   const [isSelectTool,     setIsSelectTool]      = useState(false);
   const [selectSubMode,    setSelectSubMode]      = useState<'rect'|'lasso'>('rect');
@@ -413,6 +417,7 @@ export const PenCanvas: React.FC<Props> = ({
   const [showColorPicker,   setShowColorPicker]   = useState(false);
   const [showSizePicker,    setShowSizePicker]    = useState(false);
   const [showPenMenu,       setShowPenMenu]       = useState(false);
+  const [showHLMenu,        setShowHLMenu]        = useState(false);
   const [showEraserMenu,    setShowEraserMenu]    = useState(false);
   const [showPaperMenu,     setShowPaperMenu]     = useState(false);
   const [pages,        setPages]        = useState<Page[]>([{ id: 'p1', strokes: [] }]);
@@ -1789,6 +1794,13 @@ export const PenCanvas: React.FC<Props> = ({
           selDragStartRef.current = null;
           const updatedStrokes = [...strokesRef.current];
           setPages(prev => prev.map((pg,i) => i===live.current.pageIdx ? {...pg, strokes:updatedStrokes} : pg));
+          // 이동 완료 → 선택 도구 자동 해제 + 이전 펜 복귀
+          setIsSelectTool(false);
+          live.current.isSelectTool = false;
+          const prev = prevPenBeforeSelectRef.current;
+          setPenType(prev.penType); live.current.penType = prev.penType;
+          setIsEraser(prev.isEraser); live.current.isEraser = prev.isEraser;
+          clearSelection();
           return;
         }
         // ── 선택 완료 ────────────────────────────────────────────────────
@@ -2217,6 +2229,10 @@ export const PenCanvas: React.FC<Props> = ({
     setSelBBox(bb); selBBoxRef.current = bb;
     if (bb) drawSelectionOverlay(null,[],bb,true);
     // 붙인 즉시 선택 도구로 전환 → 바로 드래그로 이동 가능
+    // 이전 펜 상태 저장 (이동 완료 후 자동 복귀용)
+    if (!live.current.isSelectTool) {
+      prevPenBeforeSelectRef.current = { penType: live.current.penType, isEraser: live.current.isEraser };
+    }
     setIsSelectTool(true);
     live.current.isSelectTool = true;
   }, [clipboardStrokes, redrawBase, drawSelectionOverlay]);
@@ -2916,13 +2932,15 @@ export const PenCanvas: React.FC<Props> = ({
             </button>
             {showPenMenu && (
               <div ref={penMenuRef} className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-1.5 shadow-xl z-50 min-w-[160px] flex flex-col gap-1">
-                {(['pen','penFountain','fountain','highlighter'] as PenType[]).map(pt => (
+                {(['pen','penFountain','fountain'] as PenType[]).map(pt => (
                   <button key={pt} type="button"
                     onClick={() => {
                       setPenType(pt);
+                      live.current.penType = pt;
                       // penFountain으로 전환 시 기본 강도 '약'(0.5) 설정
                       if (pt === 'penFountain' && fountainIntensity > 2.0) setFountainIntensity(0.5);
-                      setIsEraser(false); setShowPenMenu(false);
+                      setIsEraser(false); live.current.isEraser = false;
+                      setShowPenMenu(false);
                     }}
                     className={`px-3 py-2 rounded-xl text-xs font-black text-left flex items-center gap-2 cursor-pointer ${penType===pt&&!isEraser?'bg-purple-600 text-white':'text-stone-800 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-800'}`}>
                     <span>{PEN_ICONS[pt]}</span><span>{PEN_LABELS[pt]}</span>
@@ -2958,31 +2976,60 @@ export const PenCanvas: React.FC<Props> = ({
                     </div>
                   </div>
                 )}
-                {/* Highlighter settings */}
-                {penType === 'highlighter' && (
-                  <div className="px-3 py-2 border-t border-stone-100 dark:border-slate-700 mt-1 flex flex-col gap-2">
-                    <div>
-                      <div className="text-[10px] font-black text-stone-500 mb-1.5">투명도</div>
-                      <div className="flex gap-1">
-                        {[{label:'연하게',val:0.20},{label:'보통',val:0.38},{label:'진하게',val:0.60}].map(({label,val}) => (
-                          <button key={label} type="button"
-                            onClick={() => { setHlOpacity(val); live.current.hlOpacity = val; }}
-                            className={`flex-1 py-1 rounded-lg text-[10px] font-black cursor-pointer ${Math.abs(hlOpacity-val)<0.05?'bg-yellow-400 text-stone-900':'bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-slate-300'}`}>
-                            {label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-black text-stone-500">직선 모드</span>
-                      <button type="button"
-                        onClick={() => { setHlStraight(v => !v); live.current.hlStraight = !hlStraight; }}
-                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-black cursor-pointer ${hlStraight?'bg-yellow-400 text-stone-900':'bg-stone-200 dark:bg-slate-700 text-stone-600 dark:text-slate-300'}`}>
-                        {hlStraight?'ON':'OFF'}
+              </div>
+            )}
+          </div>
+
+          {/* ── 형광펜 버튼 (독립 버튼) ── */}
+          <div className="relative flex items-center">
+            {/* 🖍️ 아이콘: 클릭 → 형광펜 ON/OFF 토글 */}
+            <button type="button" title="형광펜"
+              onClick={() => {
+                if (penType === 'highlighter' && !isEraser) {
+                  // 형광펜 → 이전 펜으로 복귀
+                  const prev = prevPenBeforeHLRef.current;
+                  setPenType(prev); live.current.penType = prev;
+                } else {
+                  // 이전 펜 저장 후 형광펜으로 전환
+                  prevPenBeforeHLRef.current = isEraser ? penType : penType;
+                  setPenType('highlighter'); live.current.penType = 'highlighter';
+                  setIsEraser(false); live.current.isEraser = false;
+                }
+                setShowHLMenu(false); setShowPenMenu(false); setShowColorPicker(false);
+                setShowSizePicker(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false);
+              }}
+              className={`px-1.5 py-1.5 md:px-2 md:py-2 cursor-pointer active:scale-95 shrink-0 ${penType==='highlighter'&&!isEraser?'text-yellow-300':'text-white/40 hover:text-white/80'}`}>
+              <span className="text-base leading-none">🖍️</span>
+            </button>
+            {/* ▾: 형광펜 활성 시에만 표시 → 설정 팝오버 열기 */}
+            {penType === 'highlighter' && !isEraser && (
+              <button type="button"
+                onClick={() => { setShowHLMenu(!showHLMenu); setShowPenMenu(false); setShowColorPicker(false); setShowSizePicker(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
+                className="text-[8px] text-white/25 cursor-pointer hover:text-white/60 pr-1">▾</button>
+            )}
+            {/* 형광펜 설정 팝오버 */}
+            {showHLMenu && penType === 'highlighter' && (
+              <div className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-1.5 shadow-xl z-50 min-w-[180px] flex flex-col gap-1">
+                <div className="px-3 py-2">
+                  <div className="text-[10px] font-black text-stone-500 mb-1.5">투명도</div>
+                  <div className="flex gap-1">
+                    {[{label:'연하게',val:0.20},{label:'보통',val:0.38},{label:'진하게',val:0.60}].map(({label,val}) => (
+                      <button key={label} type="button"
+                        onClick={() => { setHlOpacity(val); live.current.hlOpacity = val; }}
+                        className={`flex-1 py-1 rounded-lg text-[10px] font-black cursor-pointer ${Math.abs(hlOpacity-val)<0.05?'bg-yellow-400 text-stone-900':'bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-slate-300'}`}>
+                        {label}
                       </button>
-                    </div>
+                    ))}
                   </div>
-                )}
+                </div>
+                <div className="flex items-center justify-between px-3 pb-2">
+                  <span className="text-[10px] font-black text-stone-500">직선 모드</span>
+                  <button type="button"
+                    onClick={() => { setHlStraight(v => !v); live.current.hlStraight = !hlStraight; }}
+                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-black cursor-pointer ${hlStraight?'bg-yellow-400 text-stone-900':'bg-stone-200 dark:bg-slate-700 text-stone-600 dark:text-slate-300'}`}>
+                    {hlStraight?'ON':'OFF'}
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -3232,10 +3279,19 @@ export const PenCanvas: React.FC<Props> = ({
             <button type="button" title="선택/이동"
               onClick={() => {
                 const next = !isSelectTool;
+                if (next) {
+                  // 선택 도구 진입: 현재 펜 상태 저장
+                  prevPenBeforeSelectRef.current = { penType: live.current.penType, isEraser: live.current.isEraser };
+                  setIsEraser(false); live.current.isEraser = false;
+                } else {
+                  // 선택 도구 해제: 이전 펜 복귀
+                  const prev = prevPenBeforeSelectRef.current;
+                  setPenType(prev.penType); live.current.penType = prev.penType;
+                  setIsEraser(prev.isEraser); live.current.isEraser = prev.isEraser;
+                  clearSelection();
+                }
                 setIsSelectTool(next);
                 live.current.isSelectTool = next;
-                if (!next) clearSelection();
-                if (next) { setIsEraser(false); live.current.isEraser = false; }
               }}
               className={`px-1.5 py-1.5 md:px-2 md:py-2 cursor-pointer active:scale-95 shrink-0 rounded-lg ${isSelectTool?'text-blue-400 bg-blue-500/20':'text-white/40 hover:text-white/80'}`}>
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -3764,22 +3820,46 @@ export const PenCanvas: React.FC<Props> = ({
         )}
 
         {/* ── 페이지 병합 모달 ── */}
-        {showMergeModal && allNotes && (
+        {showMergeModal && allNotes && (() => {
+          // 범위 드래그 선택용 로컬 상태는 ref로 관리 (리렌더 없이)
+          const rangeAnchorRef = { current: -1 };
+          const allPageCount = pages.length;
+          const allSelected = mergeSelPages.length === allPageCount;
+
+          const togglePage = (i: number) => setMergeSelPages(sel =>
+            sel.includes(i) ? sel.filter(x => x !== i) : [...sel, i].sort((a,b) => a-b)
+          );
+          const selectRange = (from: number, to: number) => {
+            const lo = Math.min(from, to), hi = Math.max(from, to);
+            const range = Array.from({length: hi - lo + 1}, (_, k) => lo + k);
+            setMergeSelPages(prev => {
+              const merged = Array.from(new Set([...prev, ...range])).sort((a,b)=>a-b);
+              return merged;
+            });
+          };
+
+          return (
           <div className="absolute inset-0 z-50 flex items-center justify-center"
             style={{background:'rgba(0,0,0,0.7)', backdropFilter:'blur(4px)'}}>
-            <div className="bg-zinc-900 rounded-2xl p-5 w-80 max-w-[92vw] flex flex-col gap-4 shadow-2xl border border-white/10">
+            <div className="bg-zinc-900 rounded-2xl p-5 w-[340px] max-w-[95vw] flex flex-col gap-4 shadow-2xl border border-white/10">
+
+              {/* 헤더 */}
               <div className="flex items-center justify-between">
-                <span className="text-white font-black text-sm">페이지 병합</span>
                 <div className="flex items-center gap-2">
-                  {/* 이동 / 복사 토글 */}
+                  <span className="text-white font-black text-sm">페이지 병합</span>
+                  {mergeSelPages.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-600 text-white">
+                      {mergeSelPages.length}p 선택
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
                   <div className="flex rounded-lg overflow-hidden border border-white/15">
-                    <button type="button"
-                      onClick={() => setMergeCopyMode(false)}
+                    <button type="button" onClick={() => setMergeCopyMode(false)}
                       className={`px-2.5 py-1 text-[11px] font-black cursor-pointer ${!mergeCopyMode?'bg-purple-600 text-white':'text-white/40 hover:text-white/70'}`}>
                       이동
                     </button>
-                    <button type="button"
-                      onClick={() => setMergeCopyMode(true)}
+                    <button type="button" onClick={() => setMergeCopyMode(true)}
                       className={`px-2.5 py-1 text-[11px] font-black cursor-pointer ${mergeCopyMode?'bg-blue-600 text-white':'text-white/40 hover:text-white/70'}`}>
                       복사
                     </button>
@@ -3793,22 +3873,64 @@ export const PenCanvas: React.FC<Props> = ({
 
               {/* 원본 페이지 선택 */}
               <div>
-                <div className="text-[10px] font-black text-white/40 uppercase tracking-wider mb-2">이동할 페이지 선택</div>
-                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
-                  {pages.map((_, i) => (
-                    <button key={i} type="button"
-                      onClick={() => setMergeSelPages(sel =>
-                        sel.includes(i) ? sel.filter(x => x !== i) : [...sel, i].sort((a,b) => a-b)
-                      )}
-                      className={`w-9 h-9 rounded-lg text-xs font-black cursor-pointer active:scale-95 transition-colors ${
-                        mergeSelPages.includes(i)
-                          ? 'bg-purple-600 text-white'
-                          : 'bg-white/10 text-white/50 hover:bg-white/20'
-                      }`}>
-                      {i + 1}
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-[10px] font-black text-white/40 uppercase tracking-wider">
+                    {mergeCopyMode ? '복사할' : '이동할'} 페이지 선택 <span className="normal-case font-normal text-white/25">(복수 선택 가능)</span>
+                  </div>
+                  <div className="flex gap-1">
+                    <button type="button"
+                      onClick={() => setMergeSelPages(allSelected ? [] : Array.from({length:allPageCount},(_,i)=>i))}
+                      className="px-2 py-0.5 rounded text-[10px] font-black cursor-pointer bg-white/10 text-white/50 hover:bg-white/20">
+                      {allSelected ? '해제' : '전체'}
                     </button>
-                  ))}
+                    {/* 현재 페이지 퀵선택 */}
+                    <button type="button"
+                      onClick={() => {
+                        const ci = live.current.pageIdx;
+                        setMergeSelPages(sel => sel.includes(ci) ? sel.filter(x=>x!==ci) : [...sel,ci].sort((a,b)=>a-b));
+                      }}
+                      className="px-2 py-0.5 rounded text-[10px] font-black cursor-pointer bg-white/10 text-white/50 hover:bg-white/20">
+                      현재
+                    </button>
+                  </div>
                 </div>
+                {/* 페이지 버튼 그리드 — 드래그로 범위 선택 */}
+                <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto select-none">
+                  {pages.map((pg, i) => {
+                    const isSel = mergeSelPages.includes(i);
+                    return (
+                      <button key={i} type="button"
+                        onPointerDown={e => {
+                          e.currentTarget.setPointerCapture(e.pointerId);
+                          rangeAnchorRef.current = i;
+                          togglePage(i);
+                        }}
+                        onPointerEnter={e => {
+                          // 드래그 중에만 (pointerCapture가 없으면 enter는 발생 안 함)
+                          if (rangeAnchorRef.current >= 0) {
+                            selectRange(rangeAnchorRef.current, i);
+                          }
+                        }}
+                        onPointerUp={() => { rangeAnchorRef.current = -1; }}
+                        className={`relative w-10 h-10 rounded-lg text-xs font-black cursor-pointer transition-colors ${
+                          isSel ? 'bg-purple-600 text-white ring-2 ring-purple-400' : 'bg-white/10 text-white/50 hover:bg-white/20'
+                        }`}>
+                        {i + 1}
+                        {isSel && (
+                          <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-purple-400 flex items-center justify-center text-[7px] text-white font-black leading-none">
+                            ✓
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* 선택된 페이지 요약 */}
+                {mergeSelPages.length > 0 && (
+                  <div className="mt-2 text-[10px] text-white/30">
+                    선택: {mergeSelPages.map(i => `${i+1}p`).join(', ')}
+                  </div>
+                )}
               </div>
 
               {/* 대상 노트 선택 */}
@@ -3832,23 +3954,13 @@ export const PenCanvas: React.FC<Props> = ({
                   const targetPageCount = targetNote?.pageStrokes?.length ?? 1;
                   return (
                     <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
-                      <button type="button"
-                        onClick={() => setMergeInsertAfter(-1)}
-                        className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer active:scale-95 transition-colors ${
-                          mergeInsertAfter === -1
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-white/10 text-white/50 hover:bg-white/20'
-                        }`}>
+                      <button type="button" onClick={() => setMergeInsertAfter(-1)}
+                        className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer active:scale-95 transition-colors ${mergeInsertAfter===-1?'bg-blue-600 text-white':'bg-white/10 text-white/50 hover:bg-white/20'}`}>
                         맨 앞
                       </button>
                       {Array.from({length: targetPageCount}, (_, i) => (
-                        <button key={i} type="button"
-                          onClick={() => setMergeInsertAfter(i)}
-                          className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer active:scale-95 transition-colors ${
-                            mergeInsertAfter === i
-                              ? 'bg-blue-600 text-white'
-                              : 'bg-white/10 text-white/50 hover:bg-white/20'
-                          }`}>
+                        <button key={i} type="button" onClick={() => setMergeInsertAfter(i)}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer active:scale-95 transition-colors ${mergeInsertAfter===i?'bg-blue-600 text-white':'bg-white/10 text-white/50 hover:bg-white/20'}`}>
                           {i + 1}p 뒤
                         </button>
                       ))}
@@ -3878,11 +3990,14 @@ export const PenCanvas: React.FC<Props> = ({
                 style={{background: mergeSelPages.length > 0 && mergeTargetNote ? (mergeCopyMode ? 'rgba(37,99,235,0.9)' : 'rgba(124,58,237,0.9)') : undefined, color:'#fff'}}>
                 {mergeLoading
                   ? (mergeCopyMode ? '복사 중...' : '이동 중...')
-                  : `${mergeSelPages.length}페이지 ${mergeCopyMode ? '복사' : '이동'}`}
+                  : mergeSelPages.length > 0
+                    ? `${mergeSelPages.length}페이지 ${mergeCopyMode ? '복사' : '이동'}`
+                    : '페이지를 선택하세요'}
               </button>
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* ── 선택 도구 플로팅 메뉴 ───────────────────────────────────────── */}
         {isSelectTool && selectedIds.size > 0 && selBBox && !isDraggingSel && (

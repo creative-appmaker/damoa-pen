@@ -370,6 +370,8 @@ export const PenCanvas: React.FC<Props> = ({
   const [title,             setTitle]             = useState(editingNote?.title ?? '');
   const [paperType,         setPaperType]         = useState<'white'|'yellow'|'black'>(initPT);
   const [penColor,          setPenColor]          = useState(initPS?.penColor ?? (initPT === 'black' ? '#ffffff' : '#1c1917'));
+  // 형광펜 전용 색상 (일반 penColor와 완전 분리)
+  const [hlColor,           setHlColor]           = useState('#ffeb3b'); // 기본 노란색
   const [penSize,           setPenSize]           = useState(initPS?.penSize ?? 2);
   const [penSizeInput,      setPenSizeInput]      = useState((initPS?.penSize ?? 2).toFixed(1)); // 직접 입력용 문자열
   const [penType,           setPenType]           = useState<PenType>(editingNote?.penSettings?.penType ?? 'fountain');
@@ -556,7 +558,7 @@ export const PenCanvas: React.FC<Props> = ({
     pageIdx: 0, autoReturnPen: true,
     paperType: initPT as 'white'|'yellow'|'black', showLines: true, lineSpacing: 30,
     zoomEnabled: false,
-    hlOpacity: 0.38, hlStraight: true,
+    hlOpacity: 0.38, hlStraight: true, hlColor: '#ffeb3b',
     isSelectTool: false,
     pages: [] as Page[],
     editingNoteId: undefined as string | undefined,
@@ -578,6 +580,7 @@ export const PenCanvas: React.FC<Props> = ({
   live.current.zoomEnabled        = zoomEnabled;
   live.current.hlOpacity          = hlOpacity;
   live.current.hlStraight         = hlStraight;
+  live.current.hlColor            = hlColor;
   live.current.isSelectTool       = isSelectTool;
   selIdsRef.current               = selectedIds;   // 포인터 핸들러용 최신 mirror
   selBBoxRef.current              = selBBox;
@@ -1572,7 +1575,9 @@ export const PenCanvas: React.FC<Props> = ({
     const onDown = (e: PointerEvent) => {
       const { penOnlyMode: pom, penColor: pc, penSize: ps, penType: pt,
               fountainIntensity: fi, isEraser: ie, eraserType: et, eraserSize: es,
-              hlOpacity: hlo, hlStraight: hls, isSelectTool: ist } = live.current;
+              hlOpacity: hlo, hlStraight: hls, hlColor: hlc, isSelectTool: ist } = live.current;
+      // 형광펜은 전용 색상(hlColor) 사용, 일반 펜은 penColor 사용
+      const activeColor = pt === 'highlighter' ? hlc : pc;
       if (pom && e.pointerType === 'touch') return;
       e.preventDefault();
 
@@ -1659,7 +1664,7 @@ export const PenCanvas: React.FC<Props> = ({
       else hlStartRef.current = null;
 
       const stroke: Stroke = {
-        id: `s-${Date.now()}-${Math.random()}`, points: [p], color: pc, size: ps, penType: pt,
+        id: `s-${Date.now()}-${Math.random()}`, points: [p], color: activeColor, size: ps, penType: pt,
         fountainIntensity: fi,
         ...(pt === 'highlighter' ? { opacity: hlo, straight: hls } : {}),
       };
@@ -1737,6 +1742,7 @@ export const PenCanvas: React.FC<Props> = ({
       if (!isDrawingRef.current) return;
       const { penOnlyMode: pom, penColor: pc, penSize: ps, penType: pt,
               fountainIntensity: fi, isEraser: ie, eraserType: et, eraserSize: es } = live.current;
+      const moveColor = pt === 'highlighter' ? live.current.hlColor : pc;
       if (pom && e.pointerType === 'touch') return;
       const rect = cachedRectRef.current || target.getBoundingClientRect();
       const xfmScale = canvasXformRef.current.scale;
@@ -1752,7 +1758,7 @@ export const PenCanvas: React.FC<Props> = ({
           if (ac) {
             const ctx = ac.getContext('2d')!;
             ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,ac.width,ac.height); ctx.restore();
-            appendSegment(ctx, { color: pc, size: ps, penType: pt, fountainIntensity: fi, opacity: live.current.hlOpacity } as Stroke, [hlStartRef.current, p]);
+            appendSegment(ctx, { color: moveColor, size: ps, penType: pt, fountainIntensity: fi, opacity: live.current.hlOpacity } as Stroke, [hlStartRef.current, p]);
           }
           // 각도 계산 (0° = 수평, 90° = 수직)
           const dx2 = p.x - hlStartRef.current.x, dy2 = p.y - hlStartRef.current.y;
@@ -1775,7 +1781,7 @@ export const PenCanvas: React.FC<Props> = ({
           : p;
         pts.push(smoothed);
         const ac = activeCanvasRef.current;
-        if (ac) appendSegment(ac.getContext('2d')!, { color: pc, size: ps, penType: pt, fountainIntensity: fi } as Stroke, pts);
+        if (ac) appendSegment(ac.getContext('2d')!, { color: moveColor, size: ps, penType: pt, fountainIntensity: fi } as Stroke, pts);
       }
     };
 
@@ -3155,6 +3161,20 @@ export const PenCanvas: React.FC<Props> = ({
             {showHLMenu && penType === 'highlighter' && (
               <div className="absolute left-0 top-full mt-1.5 bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-700 rounded-2xl p-1.5 shadow-xl z-50 min-w-[180px] flex flex-col gap-1">
                 <div className="px-3 py-2">
+                  <div className="text-[10px] font-black text-stone-500 mb-1.5">형광펜 색상</div>
+                  <div className="flex gap-1.5 flex-wrap mb-1">
+                    {['#ffeb3b','#69f0ae','#40c4ff','#ff80ab','#ffab40','#ea80fc'].map(c => (
+                      <button key={c} type="button"
+                        onClick={() => { setHlColor(c); live.current.hlColor = c; }}
+                        className={`w-7 h-7 rounded-full border-2 cursor-pointer ${hlColor===c?'ring-2 ring-purple-500 ring-offset-1 border-purple-400 scale-110':'border-stone-300 dark:border-slate-600 hover:scale-105'}`}
+                        style={{backgroundColor:c, opacity:0.7}}/>
+                    ))}
+                    <input type="color" value={hlColor}
+                      onChange={e => { setHlColor(e.target.value); live.current.hlColor = e.target.value; }}
+                      className="w-7 h-7 rounded cursor-pointer border border-stone-200" title="직접 선택"/>
+                  </div>
+                </div>
+                <div className="px-3 py-2 border-t border-stone-100 dark:border-slate-700">
                   <div className="text-[10px] font-black text-stone-500 mb-1.5">투명도</div>
                   <div className="flex gap-1">
                     {[{label:'연하게',val:0.20},{label:'보통',val:0.38},{label:'진하게',val:0.60}].map(({label,val}) => (
@@ -3184,7 +3204,7 @@ export const PenCanvas: React.FC<Props> = ({
               onClick={() => { setShowColorPicker(!showColorPicker); setShowSizePicker(false); setShowPenMenu(false); setShowEraserMenu(false); setShowPaperMenu(false); setShowSettingsPanel(false); }}
               className="px-1.5 py-1.5 md:px-2 md:py-2 cursor-pointer active:scale-95 shrink-0 flex items-center gap-0.5 hover:opacity-90">
               <span className="w-4 h-4 rounded-full shrink-0"
-                style={{backgroundColor: isEraser ? '#9ca3af' : penColor, opacity: isHL ? 0.6 : 1, outline: '2px solid rgba(255,255,255,0.25)', outlineOffset:'1px'}}/>
+                style={{backgroundColor: isEraser ? '#9ca3af' : (isHL ? hlColor : penColor), opacity: isHL ? 0.6 : 1, outline: '2px solid rgba(255,255,255,0.25)', outlineOffset:'1px'}}/>
               <span className="text-[8px] text-white/25">▾</span>
             </button>
             {showColorPicker && (
@@ -3192,15 +3212,15 @@ export const PenCanvas: React.FC<Props> = ({
                 <div className="grid grid-cols-4 gap-1.5">
                   {(isHL ? HL_COLORS : COLOR_PALETTE).map(c => (
                     <button key={c} type="button"
-                      onClick={() => { setPenColor(c); setIsEraser(false); setShowColorPicker(false); }}
-                      className={`w-8 h-8 rounded-full border-2 cursor-pointer ${!isEraser&&penColor===c?'ring-2 ring-purple-500 ring-offset-1 border-purple-400 scale-110':'border-stone-300 dark:border-slate-600 hover:scale-105'}`}
+                      onClick={() => { if (isHL) { setHlColor(c); live.current.hlColor = c; } else { setPenColor(c); } setIsEraser(false); setShowColorPicker(false); }}
+                      className={`w-8 h-8 rounded-full border-2 cursor-pointer ${!isEraser&&(isHL?hlColor:penColor)===c?'ring-2 ring-purple-500 ring-offset-1 border-purple-400 scale-110':'border-stone-300 dark:border-slate-600 hover:scale-105'}`}
                       style={{backgroundColor:c, opacity: isHL ? 0.6 : 1}}/>
                   ))}
                 </div>
                 <div className="flex items-center gap-2 mt-2 pt-2 border-t border-stone-100 dark:border-slate-700">
-                  <input type="color" value={penColor} onChange={e => { setPenColor(e.target.value); setIsEraser(false); }}
+                  <input type="color" value={isHL ? hlColor : penColor} onChange={e => { if (isHL) { setHlColor(e.target.value); live.current.hlColor = e.target.value; } else { setPenColor(e.target.value); } setIsEraser(false); }}
                     className="w-7 h-7 rounded cursor-pointer border border-stone-200"/>
-                  <span className="text-[10px] font-mono text-stone-500">{penColor}</span>
+                  <span className="text-[10px] font-mono text-stone-500">{isHL ? hlColor : penColor}</span>
                 </div>
               </div>
             )}

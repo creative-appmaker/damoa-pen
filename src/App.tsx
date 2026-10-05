@@ -660,6 +660,7 @@ export default function App() {
             <NoteList
               notes={filteredNotes}
               folders={folders}
+              notesLoaded={notesLoaded}
               onNew={handleNew}
               onOpenPdf={handleOpenPdf}
               onEdit={handleEdit}

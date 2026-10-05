@@ -476,7 +476,7 @@ export const PenCanvas: React.FC<Props> = ({
 
   // ── 즐겨찾기 펜 ──────────────────────────────────────────────────────────
   const [showFavMenu, setShowFavMenu] = useState(false);
-  const [favPens, setFavPens] = useState<Array<{id:string;name:string;penType:PenType;penSize:number;penColor:string;fountainIntensity:number}>>(() => {
+  const [favPens, setFavPens] = useState<Array<{id:string;name:string;penType:PenType;penSize:number;penColor:string;fountainIntensity:number;penStraight?:boolean}>>(() => {
     try { return JSON.parse(localStorage.getItem('damoa_fav_pens') ?? '[]'); } catch { return []; }
   });
 
@@ -521,6 +521,9 @@ export const PenCanvas: React.FC<Props> = ({
   const [showOutlinePanel, setShowOutlinePanel] = useState(false);
   const [newOutlineLabel,  setNewOutlineLabel]  = useState('');
 
+  // ── 직선 모드 (일반 펜) ────────────────────────────────────────────────────
+  const [penStraight,      setPenStraight]      = useState(false);
+
   // ── 형광펜 설정 ───────────────────────────────────────────────────────────
   const [showHlMenu,       setShowHlMenu]       = useState(false);
   const [hlOpacity,        setHlOpacity]        = useState(0.38);
@@ -558,6 +561,7 @@ export const PenCanvas: React.FC<Props> = ({
     pageIdx: 0, autoReturnPen: true,
     paperType: initPT as 'white'|'yellow'|'black', showLines: true, lineSpacing: 30,
     zoomEnabled: false,
+    penStraight: false,
     hlOpacity: 0.38, hlStraight: true, hlColor: '#ffeb3b',
     isSelectTool: false,
     pages: [] as Page[],
@@ -578,6 +582,7 @@ export const PenCanvas: React.FC<Props> = ({
   live.current.showLines          = showLines;
   live.current.lineSpacing        = lineSpacing;
   live.current.zoomEnabled        = zoomEnabled;
+  live.current.penStraight        = penStraight;
   live.current.hlOpacity          = hlOpacity;
   live.current.hlStraight         = hlStraight;
   live.current.hlColor            = hlColor;
@@ -601,8 +606,8 @@ export const PenCanvas: React.FC<Props> = ({
     ctx.fillStyle = pt === 'black' ? '#1a1a1a' : pt === 'yellow' ? '#fef9c3' : '#ffffff';
     ctx.fillRect(0, 0, cssW, cssH);
     if (live.current.showLines) {
-      ctx.strokeStyle = pt === 'black' ? '#333' : pt === 'yellow' ? '#c4ad6a' : '#e5e7eb';
-      ctx.lineWidth = 0.5;
+      ctx.strokeStyle = pt === 'black' ? '#585858' : pt === 'yellow' ? '#bba45a' : '#d1d5db';
+      ctx.lineWidth = pt === 'black' ? 0.8 : 0.5;
       for (let y = live.current.lineSpacing; y < cssH; y += live.current.lineSpacing) {
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cssW, y); ctx.stroke();
       }
@@ -1575,7 +1580,7 @@ export const PenCanvas: React.FC<Props> = ({
     const onDown = (e: PointerEvent) => {
       const { penOnlyMode: pom, penColor: pc, penSize: ps, penType: pt,
               fountainIntensity: fi, isEraser: ie, eraserType: et, eraserSize: es,
-              hlOpacity: hlo, hlStraight: hls, hlColor: hlc, isSelectTool: ist } = live.current;
+              hlOpacity: hlo, hlStraight: hls, hlColor: hlc, penStraight: pstr, isSelectTool: ist } = live.current;
       // 형광펜은 전용 색상(hlColor) 사용, 일반 펜은 penColor 사용
       const activeColor = pt === 'highlighter' ? hlc : pc;
       if (pom && e.pointerType === 'touch') return;
@@ -1659,9 +1664,12 @@ export const PenCanvas: React.FC<Props> = ({
         handleEraseAt(p, et, es); return;
       }
 
-      // 형광펜 직선 모드: 시작점 기록
-      if (pt === 'highlighter' && hls) hlStartRef.current = { x: p.x, y: p.y, pressure: p.pressure };
-      else hlStartRef.current = null;
+      // 직선 모드: 시작점 기록 (형광펜 직선 OR 일반 펜 직선)
+      if ((pt === 'highlighter' && hls) || (pt !== 'highlighter' && !ie && pstr)) {
+        hlStartRef.current = { x: p.x, y: p.y, pressure: p.pressure };
+      } else {
+        hlStartRef.current = null;
+      }
 
       const stroke: Stroke = {
         id: `s-${Date.now()}-${Math.random()}`, points: [p], color: activeColor, size: ps, penType: pt,
@@ -1752,13 +1760,14 @@ export const PenCanvas: React.FC<Props> = ({
         if (ie) { handleEraseAt(p, et, es); continue; }
         if (!currentStrokeRef.current) continue;
 
-        // 형광펜 직선 모드: 시작점→현재점 미리보기만, 포인트 축적 안 함
-        if (pt === 'highlighter' && hlStartRef.current) {
+        // 직선 모드: 시작점→현재점 미리보기만, 포인트 축적 안 함
+        if (hlStartRef.current) {
           const ac = activeCanvasRef.current;
           if (ac) {
             const ctx = ac.getContext('2d')!;
             ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,ac.width,ac.height); ctx.restore();
-            appendSegment(ctx, { color: moveColor, size: ps, penType: pt, fountainIntensity: fi, opacity: live.current.hlOpacity } as Stroke, [hlStartRef.current, p]);
+            const strOpacity = pt === 'highlighter' ? live.current.hlOpacity : undefined;
+            appendSegment(ctx, { color: moveColor, size: ps, penType: pt, fountainIntensity: fi, ...(strOpacity !== undefined ? { opacity: strOpacity } : {}) } as Stroke, [hlStartRef.current, p]);
           }
           // 각도 계산 (0° = 수평, 90° = 수직)
           const dx2 = p.x - hlStartRef.current.x, dy2 = p.y - hlStartRef.current.y;
@@ -1881,16 +1890,16 @@ export const PenCanvas: React.FC<Props> = ({
         // 형광펜 직선: 각도 HUD 숨기기
         setHlAngle(null);
         setHlPenScreen(null);
-        // 형광펜 직선: 시작점→끝점 2포인트만 저장
-        if (stroke.penType === 'highlighter' && hlStartRef.current && stroke.points.length > 0) {
+        // 직선 모드: 시작점→끝점 2포인트만 저장 (형광펜 + 일반 펜 직선)
+        if (hlStartRef.current && stroke.points.length > 0) {
           const rect2 = cachedRectRef.current || target.getBoundingClientRect();
           const xs = canvasXformRef.current.scale;
           const ep: Point = { x: (e.clientX - rect2.left) / xs, y: (e.clientY - rect2.top) / xs, pressure: 0.5, t: Date.now() };
           stroke = { ...stroke, points: [hlStartRef.current, ep] };
           hlStartRef.current = null;
         }
-        // 펜 뗄 때 Laplacian 후처리 스무딩 (형광펜 직선은 제외)
-        if (!(stroke.penType === 'highlighter' && stroke.points.length <= 2)) {
+        // 펜 뗄 때 Laplacian 후처리 스무딩 (직선 모드 제외)
+        if (!(stroke.points.length <= 2)) {
           stroke = { ...stroke, points: laplacianSmooth(stroke.points, 2) };
         }
         // undo history push (최대 30개 유지)
@@ -2555,31 +2564,34 @@ export const PenCanvas: React.FC<Props> = ({
   locateSearchTermRef.current = locateSearchTerm;
 
   // ── 페이지 전환 슬라이드 애니메이션 ──────────────────────────────────────
+  // 연속 슬라이드 방식: 현재 페이지 + peek 캔버스가 동시에 이동 → iOS 느낌
   const animatedGoToPage = (idx: number) => {
     if (idx === live.current.pageIdx || pageTransitioning.current) { goToPage(idx); return; }
     pageTransitioning.current = true;
-    const dir = idx > live.current.pageIdx ? 1 : -1; // 1 = 다음, -1 = 이전
+    const dir = idx > live.current.pageIdx ? 1 : -1; // +1 = 다음, -1 = 이전
 
-    // 현재 페이지 슬라이드 아웃
+    // ① 대상 페이지를 peek 캔버스에 미리 그리기 (연속 슬라이드용)
+    const peekSide = dir > 0 ? 'right' : 'left';
+    renderPeekCanvasRef.current(peekSide, idx);
+
+    // ② 슬라이드 시작: 현재 페이지(+peek)가 함께 이동
     setSlideActive(true);
-    setSlideOffset(dir * -100);
+    setSlideOffset(dir * -100); // 예: 다음 페이지 → wrapper를 왼쪽으로
 
+    // ③ 애니메이션 완료 후(220ms) 즉시 페이지 전환 + wrapper 초기화
     setTimeout(() => {
       goToPage(idx);
       setSlideActive(false);
-      setSlideOffset(dir * 100);
-
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          setSlideActive(true);
-          setSlideOffset(0);
-          setTimeout(() => {
-            pageTransitioning.current = false;
-            setSlideActive(false);
-          }, 180);
+      setSlideOffset(0); // 즉시 제자리로 (애니메이션 없이)
+      pageTransitioning.current = false;
+      // peek 캔버스 잔상 제거
+      setTimeout(() => {
+        [peekLeftCanvasRef, peekRightCanvasRef].forEach(ref => {
+          const c = ref.current;
+          if (c) { const ctx = c.getContext('2d'); ctx?.clearRect(0, 0, c.width, c.height); }
         });
-      });
-    }, 130);
+      }, 60);
+    }, 225); // CSS transition 0.22s + 여유 5ms
   };
   animatedGoToPageRef.current = animatedGoToPage;
   renderPeekCanvasRef.current = renderPeekCanvas;
@@ -3126,6 +3138,15 @@ export const PenCanvas: React.FC<Props> = ({
                     </div>
                   </div>
                 )}
+                {/* 직선 모드 (일반 펜 공통) */}
+                <div className="flex items-center justify-between px-3 py-2 border-t border-stone-100 dark:border-slate-700 mt-1">
+                  <span className="text-[10px] font-black text-stone-500">📏 직선 모드</span>
+                  <button type="button"
+                    onClick={() => { setPenStraight(v => !v); live.current.penStraight = !penStraight; }}
+                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-black cursor-pointer ${penStraight?'bg-purple-600 text-white':'bg-stone-200 dark:bg-slate-700 text-stone-600 dark:text-slate-300'}`}>
+                    {penStraight ? 'ON' : 'OFF'}
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -3350,14 +3371,17 @@ export const PenCanvas: React.FC<Props> = ({
                       onClick={() => {
                         setPenType(fp.penType); setPenSize(fp.penSize); setPenSizeInput(fp.penSize.toFixed(1));
                         setPenColor(fp.penColor); setFountainIntensity(fp.fountainIntensity);
+                        const fps = fp.penStraight ?? false;
+                        setPenStraight(fps);
                         setIsEraser(false); setShowFavMenu(false);
                         live.current.penType = fp.penType; live.current.penSize = fp.penSize;
                         live.current.penColor = fp.penColor; live.current.fountainIntensity = fp.fountainIntensity;
+                        live.current.penStraight = fps;
                       }}
                       className="flex-1 px-3 py-2 rounded-xl text-xs font-bold text-left flex items-center gap-2 cursor-pointer text-stone-800 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-800">
                       <span className="w-3.5 h-3.5 rounded-full shrink-0 border border-stone-300" style={{backgroundColor: fp.penColor}}/>
                       <span>{fp.name}</span>
-                      <span className="text-[10px] text-stone-400">{PEN_LABELS[fp.penType]} {fp.penSize}px</span>
+                      <span className="text-[10px] text-stone-400">{PEN_LABELS[fp.penType]} {fp.penSize}px{fp.penStraight ? ' 📏' : ''}</span>
                     </button>
                     <button type="button" title="삭제"
                       onClick={() => {
@@ -3375,7 +3399,7 @@ export const PenCanvas: React.FC<Props> = ({
                   onClick={() => {
                     const name = prompt('펜 이름', `${PEN_LABELS[penType]} ${penSize}px`)?.trim();
                     if (!name) return;
-                    const fp = { id: `fav-${Date.now()}`, name, penType, penSize, penColor, fountainIntensity };
+                    const fp = { id: `fav-${Date.now()}`, name, penType, penSize, penColor, fountainIntensity, penStraight };
                     const next = [...favPens, fp];
                     setFavPens(next);
                     localStorage.setItem('damoa_fav_pens', JSON.stringify(next));
@@ -3783,11 +3807,11 @@ export const PenCanvas: React.FC<Props> = ({
         <div style={{
           position: 'absolute', inset: 0,
           transform: `translateX(${slideOffset}%)`,
-          opacity: slideActive && slideOffset !== 0 ? 0.75 : 1,
           transition: slideActive
-            ? 'transform 0.18s cubic-bezier(0.35,0,0.25,1), opacity 0.18s cubic-bezier(0.35,0,0.25,1)'
+            ? 'transform 0.22s cubic-bezier(0.25,0.46,0.45,0.94)'
             : 'none',
-          willChange: slideActive ? 'transform, opacity' : 'auto',
+          willChange: slideActive ? 'transform' : 'auto',
+          filter: pdfInvert ? 'invert(1) hue-rotate(180deg)' : undefined,
         }}>
           {/* 이전 페이지 peek (왼쪽) */}
           <canvas ref={peekLeftCanvasRef} style={{
@@ -3806,7 +3830,6 @@ export const PenCanvas: React.FC<Props> = ({
             transform: `translate(${canvasXform.x}px,${canvasXform.y}px) scale(${canvasXform.scale})`,
             transformOrigin: '0 0',
             willChange: 'transform',
-            filter: pdfInvert ? 'invert(1) hue-rotate(180deg)' : undefined,
           }}>
           <canvas ref={baseCanvasRef} className="absolute inset-0 w-full h-full block"
             style={{touchAction:'none', userSelect:'none', willChange:'transform'}}/>
@@ -4229,7 +4252,7 @@ export const PenCanvas: React.FC<Props> = ({
         )}
 
         {/* ── 형광펜 직선 각도 HUD (펜 팁 왼쪽에 따라오는 소형 뱃지) ───────── */}
-        {hlAngle !== null && hlStraight && hlPenScreen && (
+        {hlAngle !== null && (hlStraight || penStraight) && hlPenScreen && (
           <div style={{
             position: 'absolute',
             left: Math.max(4, hlPenScreen.x - 48),

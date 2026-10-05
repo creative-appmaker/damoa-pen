@@ -32,6 +32,7 @@ import { NoteCard, ViewMode } from './NoteCard';
 interface Props {
   notes: PenNote[];
   folders?: Folder[];
+  notesLoaded?: boolean;
   onNew: () => void;
   onOpenPdf?: (file: File) => void;
   onEdit: (note: PenNote, query?: string) => void;
@@ -57,7 +58,7 @@ const VIEW_MODES: { mode: ViewMode; icon: React.ReactNode; label: string }[] = [
 ];
 
 export const NoteList: React.FC<Props> = ({
-  notes, folders, onNew, onOpenPdf, onEdit, onDelete, onTogglePin,
+  notes, folders, notesLoaded = true, onNew, onOpenPdf, onEdit, onDelete, onTogglePin,
   onMoveToFolder, onOpenFolderPanel, onSettings, darkMode,
   searchQuery: externalQuery, onSearchQueryChange, onBatchOcr,
 }) => {
@@ -287,7 +288,10 @@ export const NoteList: React.FC<Props> = ({
       <div className="flex-1 overflow-y-auto p-3">
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-8">
-            {notes.length === 0 ? (
+            {!notesLoaded ? (
+              /* 로딩 중: 빈 상태 숨김 */
+              <div className="text-stone-300 dark:text-slate-600 text-sm">불러오는 중...</div>
+            ) : notes.length === 0 ? (
               <>
                 <div className="text-6xl">✒️</div>
                 <div className="font-black text-lg text-stone-800 dark:text-slate-200">첫 번째 노트를 써보세요</div>

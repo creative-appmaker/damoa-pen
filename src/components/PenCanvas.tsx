@@ -450,7 +450,7 @@ export const PenCanvas: React.FC<Props> = ({
   const [mergeSelPages,    setMergeSelPages]    = useState<number[]>([]);  // source page indexes
   const [mergeInsertAfter, setMergeInsertAfter] = useState<number>(-1); // -1 = 맨 앞
   const [mergeLoading,     setMergeLoading]     = useState(false);
-  const [mergeCopyMode,    setMergeCopyMode]    = useState(false); // false=이동, true=복사
+  const [mergeMode,        setMergeMode]        = useState<'move'|'copy'|'delete'>('move');
 
   // ── 검색어 하이라이트 (캔버스 오버레이) ────────────────────────────────────
   const [searchHighlights, setSearchHighlights] = useState<{x:number;y:number;w:number;h:number}[]>([]);
@@ -2509,9 +2509,19 @@ export const PenCanvas: React.FC<Props> = ({
 
   // ── Pages ─────────────────────────────────────────────────────────────────
   const goToPage = (idx: number) => {
+    // ① 현재 페이지 스트로크를 먼저 live.current.pages에 커밋 (stale-closure 방지)
+    const curIdx = live.current.pageIdx;
+    if (curIdx !== idx) {
+      const committed = live.current.pages.map((pg: Page, i: number) =>
+        i === curIdx ? { ...pg, strokes: [...strokesRef.current] as Stroke[] } : pg
+      );
+      live.current.pages = committed;
+      setPages(committed);
+    }
     setPageIdx(idx);
     onPageChange?.(idx);
-    strokesRef.current = pages[idx]?.strokes || [];
+    // ② live.current.pages(항상 최신)에서 읽어 stale closure 회피
+    strokesRef.current = (live.current.pages[idx]?.strokes ?? []) as Stroke[];
     baseImageRef.current = null;
 
     // 해당 페이지 첨부 사진 로드
@@ -2562,6 +2572,39 @@ export const PenCanvas: React.FC<Props> = ({
   goToPageRef.current         = goToPage;
   pagesLenRef.current         = pages.length;
   locateSearchTermRef.current = locateSearchTerm;
+
+  // ── 페이지 삭제 ────────────────────────────────────────────────────────────
+  const handleDeletePages = (idxs: number[]) => {
+    if (idxs.length === 0 || pages.length <= idxs.length) {
+      alert('마지막 페이지는 삭제할 수 없습니다.');
+      return;
+    }
+    const sorted = [...idxs].sort((a, b) => a - b);
+    const remaining = pages.filter((_, i) => !sorted.includes(i));
+    // 각 레이어의 pageStrokes도 같이 제거
+    const updatedOthers = otherLayersRef.current.map(layer => ({
+      ...layer,
+      pageStrokes: layer.pageStrokes.filter((_, i) => !sorted.includes(i)),
+    }));
+    otherLayersRef.current = updatedOthers;
+    setOtherLayers(updatedOthers);
+    // pageImages도 동기화
+    setPageImages(prev => prev.filter((_, i) => !sorted.includes(i)));
+    // 현재 페이지 인덱스 조정
+    const newLen = remaining.length;
+    const newIdx = Math.min(live.current.pageIdx, newLen - 1);
+    setPages(remaining);
+    live.current.pages = remaining;
+    strokesRef.current = (remaining[newIdx]?.strokes ?? []) as Stroke[];
+    setPageIdx(newIdx);
+    baseImageRef.current = null;
+    if (pdfDocRef.current) {
+      loadPageBg(newIdx);
+    } else {
+      redrawBase();
+    }
+    clearActive();
+  };
 
   // ── 페이지 전환 슬라이드 애니메이션 ──────────────────────────────────────
   // 연속 슬라이드 방식: 현재 페이지 + peek 캔버스가 동시에 이동 → iOS 느낌
@@ -4042,13 +4085,17 @@ export const PenCanvas: React.FC<Props> = ({
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="flex rounded-lg overflow-hidden border border-white/15">
-                    <button type="button" onClick={() => setMergeCopyMode(false)}
-                      className={`px-2.5 py-1 text-[11px] font-black cursor-pointer ${!mergeCopyMode?'bg-purple-600 text-white':'text-white/40 hover:text-white/70'}`}>
+                    <button type="button" onClick={() => setMergeMode('move')}
+                      className={`px-2.5 py-1 text-[11px] font-black cursor-pointer ${mergeMode==='move'?'bg-purple-600 text-white':'text-white/40 hover:text-white/70'}`}>
                       이동
                     </button>
-                    <button type="button" onClick={() => setMergeCopyMode(true)}
-                      className={`px-2.5 py-1 text-[11px] font-black cursor-pointer ${mergeCopyMode?'bg-blue-600 text-white':'text-white/40 hover:text-white/70'}`}>
+                    <button type="button" onClick={() => setMergeMode('copy')}
+                      className={`px-2.5 py-1 text-[11px] font-black cursor-pointer ${mergeMode==='copy'?'bg-blue-600 text-white':'text-white/40 hover:text-white/70'}`}>
                       복사
+                    </button>
+                    <button type="button" onClick={() => setMergeMode('delete')}
+                      className={`px-2.5 py-1 text-[11px] font-black cursor-pointer ${mergeMode==='delete'?'bg-red-600 text-white':'text-white/40 hover:text-white/70'}`}>
+                      삭제
                     </button>
                   </div>
                   <button type="button" onClick={() => setShowMergeModal(false)}
@@ -4062,7 +4109,7 @@ export const PenCanvas: React.FC<Props> = ({
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-[10px] font-black text-white/40 uppercase tracking-wider">
-                    {mergeCopyMode ? '복사할' : '이동할'} 페이지 선택 <span className="normal-case font-normal text-white/25">(복수 선택 가능)</span>
+                    {mergeMode==='copy' ? '복사할' : mergeMode==='delete' ? '삭제할' : '이동할'} 페이지 선택 <span className="normal-case font-normal text-white/25">(복수 선택 가능)</span>
                   </div>
                   <div className="flex gap-1">
                     <button type="button"
@@ -4120,50 +4167,68 @@ export const PenCanvas: React.FC<Props> = ({
                 )}
               </div>
 
-              {/* 대상 노트 선택 */}
-              <div>
-                <div className="text-[10px] font-black text-white/40 uppercase tracking-wider mb-2">대상 노트</div>
-                <select value={mergeTargetNote} onChange={e => setMergeTargetNote(e.target.value)}
-                  className="w-full bg-white/10 text-white text-xs rounded-lg px-3 py-2 border border-white/15 outline-none cursor-pointer">
-                  {allNotes.filter(n => n.id !== editingNote?.id).map(n => (
-                    <option key={n.id} value={n.id} style={{background:'#1a1a1a'}}>
-                      {n.title || '(제목 없음)'}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {/* 대상 노트 선택 (삭제 모드에서는 숨김) */}
+              {mergeMode !== 'delete' && (
+                <div>
+                  <div className="text-[10px] font-black text-white/40 uppercase tracking-wider mb-2">대상 노트</div>
+                  <select value={mergeTargetNote} onChange={e => setMergeTargetNote(e.target.value)}
+                    className="w-full bg-white/10 text-white text-xs rounded-lg px-3 py-2 border border-white/15 outline-none cursor-pointer">
+                    {allNotes.filter(n => n.id !== editingNote?.id).map(n => (
+                      <option key={n.id} value={n.id} style={{background:'#1a1a1a'}}>
+                        {n.title || '(제목 없음)'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
-              {/* 삽입 위치 */}
-              <div>
-                <div className="text-[10px] font-black text-white/40 uppercase tracking-wider mb-2">삽입 위치</div>
-                {(() => {
-                  const targetNote = allNotes.find(n => n.id === mergeTargetNote);
-                  const targetPageCount = targetNote?.pageStrokes?.length ?? 1;
-                  return (
-                    <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
-                      <button type="button" onClick={() => setMergeInsertAfter(-1)}
-                        className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer active:scale-95 transition-colors ${mergeInsertAfter===-1?'bg-blue-600 text-white':'bg-white/10 text-white/50 hover:bg-white/20'}`}>
-                        맨 앞
-                      </button>
-                      {Array.from({length: targetPageCount}, (_, i) => (
-                        <button key={i} type="button" onClick={() => setMergeInsertAfter(i)}
-                          className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer active:scale-95 transition-colors ${mergeInsertAfter===i?'bg-blue-600 text-white':'bg-white/10 text-white/50 hover:bg-white/20'}`}>
-                          {i + 1}p 뒤
+              {/* 삽입 위치 (삭제 모드에서는 숨김) */}
+              {mergeMode !== 'delete' && (
+                <div>
+                  <div className="text-[10px] font-black text-white/40 uppercase tracking-wider mb-2">삽입 위치</div>
+                  {(() => {
+                    const targetNote = allNotes.find(n => n.id === mergeTargetNote);
+                    const targetPageCount = targetNote?.pageStrokes?.length ?? 1;
+                    return (
+                      <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                        <button type="button" onClick={() => setMergeInsertAfter(-1)}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer active:scale-95 transition-colors ${mergeInsertAfter===-1?'bg-blue-600 text-white':'bg-white/10 text-white/50 hover:bg-white/20'}`}>
+                          맨 앞
                         </button>
-                      ))}
-                    </div>
-                  );
-                })()}
-              </div>
+                        {Array.from({length: targetPageCount}, (_, i) => (
+                          <button key={i} type="button" onClick={() => setMergeInsertAfter(i)}
+                            className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer active:scale-95 transition-colors ${mergeInsertAfter===i?'bg-blue-600 text-white':'bg-white/10 text-white/50 hover:bg-white/20'}`}>
+                            {i + 1}p 뒤
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {/* 삭제 모드 경고 */}
+              {mergeMode === 'delete' && mergeSelPages.length > 0 && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-red-900/40 border border-red-500/30">
+                  <span className="text-red-400 text-xs font-black">⚠️</span>
+                  <span className="text-red-300 text-[11px]">선택한 {mergeSelPages.length}페이지가 영구 삭제됩니다.</span>
+                </div>
+              )}
 
               {/* 확인 버튼 */}
               <button type="button"
-                disabled={mergeSelPages.length === 0 || !mergeTargetNote || mergeLoading}
+                disabled={mergeSelPages.length === 0 || (mergeMode !== 'delete' && !mergeTargetNote) || mergeLoading}
                 onClick={async () => {
-                  if (mergeSelPages.length === 0 || !mergeTargetNote) return;
+                  if (mergeSelPages.length === 0) return;
+                  if (mergeMode === 'delete') {
+                    handleDeletePages(mergeSelPages);
+                    setShowMergeModal(false);
+                    return;
+                  }
+                  if (!mergeTargetNote) return;
                   setMergeLoading(true);
                   try {
-                    if (mergeCopyMode) {
+                    if (mergeMode === 'copy') {
                       await onCopyPages?.(mergeSelPages, mergeTargetNote, mergeInsertAfter);
                     } else {
                       await onMergePages?.(mergeSelPages, mergeTargetNote, mergeInsertAfter);
@@ -4174,11 +4239,16 @@ export const PenCanvas: React.FC<Props> = ({
                   }
                 }}
                 className="w-full py-2.5 rounded-xl text-sm font-black cursor-pointer active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                style={{background: mergeSelPages.length > 0 && mergeTargetNote ? (mergeCopyMode ? 'rgba(37,99,235,0.9)' : 'rgba(124,58,237,0.9)') : undefined, color:'#fff'}}>
+                style={{
+                  background: mergeSelPages.length > 0 && (mergeMode === 'delete' || mergeTargetNote)
+                    ? (mergeMode === 'copy' ? 'rgba(37,99,235,0.9)' : mergeMode === 'delete' ? 'rgba(220,38,38,0.9)' : 'rgba(124,58,237,0.9)')
+                    : undefined,
+                  color:'#fff'
+                }}>
                 {mergeLoading
-                  ? (mergeCopyMode ? '복사 중...' : '이동 중...')
+                  ? (mergeMode === 'copy' ? '복사 중...' : '이동 중...')
                   : mergeSelPages.length > 0
-                    ? `${mergeSelPages.length}페이지 ${mergeCopyMode ? '복사' : '이동'}`
+                    ? `${mergeSelPages.length}페이지 ${mergeMode === 'copy' ? '복사' : mergeMode === 'delete' ? '삭제' : '이동'}`
                     : '페이지를 선택하세요'}
               </button>
             </div>

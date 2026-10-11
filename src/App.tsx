@@ -168,6 +168,7 @@ export default function App() {
       coverColor?: string;
       coverGradient?: string;
       outline?: Array<{label: string; pageIdx: number}>;
+      pageImageTransforms?: (import('./types').ImgTransform | undefined)[];
     },
   ) => {
     const now = Date.now();
@@ -194,10 +195,11 @@ export default function App() {
       ocrCanvasDims: ocrCanvasDims ?? editingNote?.ocrCanvasDims,
       penLayers:     penLayers     ?? editingNote?.penLayers,
       activeLayerId: activeLayerId ?? editingNote?.activeLayerId,
-      coverType:     extraData?.coverType  ?? editingNote?.coverType,
-      coverColor:    extraData?.coverColor  ?? editingNote?.coverColor,
-      coverGradient: extraData?.coverGradient ?? editingNote?.coverGradient,
-      outline:       extraData?.outline    ?? editingNote?.outline,
+      coverType:            extraData?.coverType           ?? editingNote?.coverType,
+      coverColor:           extraData?.coverColor          ?? editingNote?.coverColor,
+      coverGradient:        extraData?.coverGradient       ?? editingNote?.coverGradient,
+      outline:              extraData?.outline             ?? editingNote?.outline,
+      pageImageTransforms:  extraData?.pageImageTransforms ?? editingNote?.pageImageTransforms,
     };
     await saveNote(note);
     await loadNotes();

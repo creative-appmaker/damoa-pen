@@ -4,9 +4,9 @@ import {
   Hand, ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
   FileText, FolderOpen, Tag, Lock, Unlock, Settings, X, Plus,
   Undo2, Redo2, Search, Image as ImageIcon, Heart, Layers, Eye, EyeOff,
-  MoreHorizontal, BookOpen, Palette, ScanText, Loader2,
+  MoreHorizontal, BookOpen, Palette, ScanText, Loader2, Move, RotateCcw,
 } from 'lucide-react';
-import { PenNote, Folder, PenType, StrokePoint, SavedStroke, PenSettings, WordBox, PenLayer } from '../types';
+import { PenNote, Folder, PenType, StrokePoint, SavedStroke, PenSettings, WordBox, PenLayer, ImgTransform } from '../types';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 type Point = StrokePoint; // StrokePoint와 동일, 로컬 별칭
@@ -45,6 +45,7 @@ interface Props {
       coverColor?: string;
       coverGradient?: string;
       outline?: Array<{label: string; pageIdx: number}>;
+      pageImageTransforms?: (ImgTransform | undefined)[];
     },
   ) => void;
   onBack: () => void;
@@ -437,6 +438,12 @@ export const PenCanvas: React.FC<Props> = ({
   const [pdfRenderMsg,  setPdfRenderMsg] = useState<string | null>(null); // "3/40페이지 렌더링 중..."
   const [pdfInvert,     setPdfInvert]    = useState(false); // PDF 반전 보기
   const [pageImages,    setPageImages]   = useState<(string|undefined)[]>(editingNote?.pageImages ?? []);
+  const [pageImageTransforms, setPageImageTransforms] = useState<(ImgTransform|undefined)[]>(editingNote?.pageImageTransforms ?? []);
+  const [photoMoveMode, setPhotoMoveMode] = useState(false);
+  const pageImageTransformsRef = useRef<(ImgTransform|undefined)[]>([]);
+  const photoMoveModeRef       = useRef(false);
+  const photoDragRef           = useRef<{startClientX: number; startClientY: number; origTX: number; origTY: number} | null>(null);
+  const photoPinchRef          = useRef<{dist: number; origScale: number; t1Id: number; t2Id: number} | null>(null);
   // 붙이기 버튼 숨김 상태 (paste 실행 후 숨김 → undo/취소 후 다시 표시)
   const [pasteDone, setPasteDone] = useState(false);
   // 붙이기 레이어 추적 (붙이기 시 자동 생성, 확정/취소 시 제거)
@@ -595,6 +602,8 @@ export const PenCanvas: React.FC<Props> = ({
   live.current.editingNoteId      = editingNote?.id; // 자동저장용
   live.current.editingNote        = editingNote;     // 오프라인 검색용
   pageImagesRef.current           = pageImages; // stale closure 방지용 ref 동기화
+  pageImageTransformsRef.current  = pageImageTransforms;
+  photoMoveModeRef.current        = photoMoveMode;
   otherLayersRef.current          = otherLayers;
   activeLayerIdRef.current        = activeLayerId;
   activeLayerNameRef.current      = activeLayerName;
@@ -737,12 +746,15 @@ export const PenCanvas: React.FC<Props> = ({
     const ctx  = canvas.getContext('2d')!;
     ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.restore();
     drawBackground(ctx, cssW, cssH);
-    // 첨부 사진 레이어 (종이색 위, PDF/스트로크 아래) — contain 방식
+    // 첨부 사진 레이어 (종이색 위, PDF/스트로크 아래) — contain 방식 + 위치/크기 변환 적용
     if (pageUserImgRef.current) {
       const img = pageUserImgRef.current;
-      const scale = Math.min(cssW / img.naturalWidth, cssH / img.naturalHeight);
-      const iw = img.naturalWidth * scale, ih = img.naturalHeight * scale;
-      const ix = (cssW - iw) / 2, iy = (cssH - ih) / 2;
+      const t = pageImageTransformsRef.current[live.current.pageIdx];
+      const baseScale = Math.min(cssW / img.naturalWidth, cssH / img.naturalHeight);
+      const finalScale = baseScale * (t?.scale ?? 1.0);
+      const iw = img.naturalWidth * finalScale, ih = img.naturalHeight * finalScale;
+      const ix = (cssW - iw) / 2 + (t?.x ?? 0);
+      const iy = (cssH - ih) / 2 + (t?.y ?? 0);
       ctx.globalAlpha = 1;
       ctx.drawImage(img, ix, iy, iw, ih);
     }
@@ -948,15 +960,17 @@ export const PenCanvas: React.FC<Props> = ({
         ctx.drawImage(bmp, (cssW - pw) / 2, 0, pw, ph);
       }
     }
-    // Attached image
+    // Attached image (위치/크기 변환 포함)
     const imgDataUrl = pageImagesRef.current[targetIdx];
     if (imgDataUrl) {
+      const t = pageImageTransformsRef.current[targetIdx];
       const img = new Image();
       img.onload = () => {
         if (!ctx) return;
-        const scale = Math.min(cssW / img.naturalWidth, cssH / img.naturalHeight);
-        const iw = img.naturalWidth * scale, ih = img.naturalHeight * scale;
-        ctx.drawImage(img, (cssW - iw) / 2, (cssH - ih) / 2, iw, ih);
+        const baseScale = Math.min(cssW / img.naturalWidth, cssH / img.naturalHeight);
+        const finalScale = baseScale * (t?.scale ?? 1.0);
+        const iw = img.naturalWidth * finalScale, ih = img.naturalHeight * finalScale;
+        ctx.drawImage(img, (cssW - iw) / 2 + (t?.x ?? 0), (cssH - ih) / 2 + (t?.y ?? 0), iw, ih);
       };
       img.src = imgDataUrl;
     }
@@ -1218,6 +1232,12 @@ export const PenCanvas: React.FC<Props> = ({
     const imgs = editingNote?.pageImages ?? [];
     setPageImages(imgs);
     pageImagesRef.current = imgs;
+    // 사진 위치/크기 변환 복원
+    const imgTransforms = editingNote?.pageImageTransforms ?? [];
+    setPageImageTransforms(imgTransforms);
+    pageImageTransformsRef.current = imgTransforms;
+    setPhotoMoveMode(false);
+    photoMoveModeRef.current = false;
     // 0번 페이지 사진 로드
     pageUserImgRef.current = null;
     if (imgs[0]) {
@@ -1319,6 +1339,25 @@ export const PenCanvas: React.FC<Props> = ({
 
     // ② 컨테이너 수준에서 터치 분류: 스와이프 vs 팜 vs 핀치 줌
     const onTouchStart = (e: TouchEvent) => {
+      // ── 사진 이동 모드 터치 ──────────────────────────────────────────────
+      if (photoMoveModeRef.current && pageUserImgRef.current) {
+        if (e.touches.length === 2) {
+          // 2-finger 핀치 → 사진 크기 조절
+          const [t1, t2] = [e.touches[0], e.touches[1]];
+          const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+          const curT = pageImageTransformsRef.current[live.current.pageIdx];
+          photoPinchRef.current = { dist, origScale: curT?.scale ?? 1.0, t1Id: t1.identifier, t2Id: t2.identifier };
+          photoDragRef.current = null;
+        } else if (e.touches.length === 1) {
+          // 1-finger 드래그 → 사진 위치 이동
+          const t = e.touches[0];
+          const curT = pageImageTransformsRef.current[live.current.pageIdx];
+          photoDragRef.current = { startClientX: t.clientX, startClientY: t.clientY, origTX: curT?.x ?? 0, origTY: curT?.y ?? 0 };
+          photoPinchRef.current = null;
+        }
+        return;
+      }
+
       // 2-finger + zoomEnabled → 핀치 줌 시작
       if (e.touches.length === 2 && live.current.zoomEnabled) {
         const [t1, t2] = [e.touches[0], e.touches[1]];
@@ -1362,6 +1401,49 @@ export const PenCanvas: React.FC<Props> = ({
     };
 
     const onTouchMove = (e: TouchEvent) => {
+      // ── 사진 이동 모드 터치 무브 ─────────────────────────────────────────
+      if (photoMoveModeRef.current && pageUserImgRef.current) {
+        const pp = photoPinchRef.current;
+        if (pp && e.touches.length >= 2) {
+          const t1 = Array.from(e.touches).find(t => t.identifier === pp.t1Id);
+          const t2 = Array.from(e.touches).find(t => t.identifier === pp.t2Id);
+          if (t1 && t2) {
+            const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+            const newScale = Math.max(0.1, Math.min(5.0, pp.origScale * dist / pp.dist));
+            const idx = live.current.pageIdx;
+            const prev = pageImageTransformsRef.current[idx];
+            const newT: ImgTransform = { x: prev?.x ?? 0, y: prev?.y ?? 0, scale: newScale };
+            const next = [...pageImageTransformsRef.current];
+            while (next.length <= idx) next.push(undefined);
+            next[idx] = newT;
+            pageImageTransformsRef.current = next;
+            setPageImageTransforms(next);
+            redrawBase();
+          }
+          e.preventDefault();
+          return;
+        }
+        const pd = photoDragRef.current;
+        if (pd && e.touches.length >= 1) {
+          const touch = Array.from(e.touches)[0];
+          const xfmScale = canvasXformRef.current.scale;
+          const dx = (touch.clientX - pd.startClientX) / xfmScale;
+          const dy = (touch.clientY - pd.startClientY) / xfmScale;
+          const idx = live.current.pageIdx;
+          const prev = pageImageTransformsRef.current[idx];
+          const newT: ImgTransform = { x: pd.origTX + dx, y: pd.origTY + dy, scale: prev?.scale ?? 1.0 };
+          const next = [...pageImageTransformsRef.current];
+          while (next.length <= idx) next.push(undefined);
+          next[idx] = newT;
+          pageImageTransformsRef.current = next;
+          setPageImageTransforms(next);
+          redrawBase();
+          e.preventDefault();
+          return;
+        }
+        return;
+      }
+
       // 핀치 줌 처리 (2-finger)
       const pr = pinchRef.current;
       if (pr && e.touches.length >= 2) {
@@ -1644,6 +1726,18 @@ export const PenCanvas: React.FC<Props> = ({
         return;
       }
 
+      // ── 사진 이동 모드 ────────────────────────────────────────────────────
+      if (photoMoveModeRef.current && pageUserImgRef.current) {
+        try { target.setPointerCapture(e.pointerId); } catch {}
+        const curT = pageImageTransformsRef.current[live.current.pageIdx];
+        photoDragRef.current = {
+          startClientX: e.clientX, startClientY: e.clientY,
+          origTX: curT?.x ?? 0, origTY: curT?.y ?? 0,
+        };
+        isDrawingRef.current = false;
+        return;
+      }
+
       try { target.setPointerCapture(e.pointerId); } catch {}
       const rect = target.getBoundingClientRect();
       cachedRectRef.current = rect;
@@ -1690,6 +1784,24 @@ export const PenCanvas: React.FC<Props> = ({
     };
 
     const onMove = (e: PointerEvent) => {
+      // ── 사진 이동 모드 무브 ──────────────────────────────────────────────
+      if (photoMoveModeRef.current && photoDragRef.current) {
+        const pd = photoDragRef.current;
+        const xfmScale = canvasXformRef.current.scale;
+        const dx = (e.clientX - pd.startClientX) / xfmScale;
+        const dy = (e.clientY - pd.startClientY) / xfmScale;
+        const idx = live.current.pageIdx;
+        const prev = pageImageTransformsRef.current[idx];
+        const newT: ImgTransform = { x: pd.origTX + dx, y: pd.origTY + dy, scale: prev?.scale ?? 1.0 };
+        const next = [...pageImageTransformsRef.current];
+        while (next.length <= idx) next.push(undefined);
+        next[idx] = newT;
+        pageImageTransformsRef.current = next;
+        setPageImageTransforms(next);
+        redrawBase();
+        return;
+      }
+
       // ── 선택 도구 무브 ──────────────────────────────────────────────────
       if (live.current.isSelectTool) {
         const rect = cachedRectRef.current || target.getBoundingClientRect();
@@ -1795,6 +1907,13 @@ export const PenCanvas: React.FC<Props> = ({
     };
 
     const onUp = (e: PointerEvent) => {
+      // ── 사진 이동 모드 업 ────────────────────────────────────────────────
+      if (photoMoveModeRef.current) {
+        photoDragRef.current = null;
+        try { target.releasePointerCapture(e.pointerId); } catch {}
+        return;
+      }
+
       // ── 선택 도구 업 ────────────────────────────────────────────────────
       if (live.current.isSelectTool) {
         try { target.releasePointerCapture(e.pointerId); } catch {}
@@ -2141,6 +2260,17 @@ export const PenCanvas: React.FC<Props> = ({
     redrawBase();
   }, [redrawBase]);
 
+  // 현재 페이지 사진 위치/크기 초기화
+  const resetImageTransform = useCallback(() => {
+    const idx = live.current.pageIdx;
+    const next = [...pageImageTransformsRef.current];
+    while (next.length <= idx) next.push(undefined);
+    next[idx] = undefined;
+    pageImageTransformsRef.current = next;
+    setPageImageTransforms(next);
+    redrawBase();
+  }, [redrawBase]);
+
   // ── PDF 레이어 전환 ──────────────────────────────────────────────────────
   const switchLayer = useCallback((newId: string) => {
     if (newId === activeLayerIdRef.current) return;
@@ -2426,10 +2556,11 @@ export const PenCanvas: React.FC<Props> = ({
       pageWordBoxes.some(b => b.length > 0) ? { w: canvasW, h: canvasH } : undefined,
       penLayersToSave, activeLayerIdToSave,
       {
-        coverType:     noteCoverType !== 'none' ? noteCoverType : undefined,
-        coverColor:    noteCoverType === 'color'    ? noteCoverColor    : undefined,
-        coverGradient: noteCoverType === 'gradient' ? noteCoverGradient : undefined,
-        outline:       outline.length > 0 ? outline : undefined,
+        coverType:           noteCoverType !== 'none' ? noteCoverType : undefined,
+        coverColor:          noteCoverType === 'color'    ? noteCoverColor    : undefined,
+        coverGradient:       noteCoverType === 'gradient' ? noteCoverGradient : undefined,
+        outline:             outline.length > 0 ? outline : undefined,
+        pageImageTransforms: pageImageTransformsRef.current.some(Boolean) ? pageImageTransformsRef.current : undefined,
       },
     );
   };
@@ -2499,10 +2630,11 @@ export const PenCanvas: React.FC<Props> = ({
       pageWordBoxes.some(b => b.length > 0) ? { w: canvasW, h: canvasH } : undefined,
       penLayersToSave, activeLayerIdToSave,
       {
-        coverType:     noteCoverType !== 'none' ? noteCoverType : undefined,
-        coverColor:    noteCoverType === 'color'    ? noteCoverColor    : undefined,
-        coverGradient: noteCoverType === 'gradient' ? noteCoverGradient : undefined,
-        outline:       outline.length > 0 ? outline : undefined,
+        coverType:           noteCoverType !== 'none' ? noteCoverType : undefined,
+        coverColor:          noteCoverType === 'color'    ? noteCoverColor    : undefined,
+        coverGradient:       noteCoverType === 'gradient' ? noteCoverGradient : undefined,
+        outline:             outline.length > 0 ? outline : undefined,
+        pageImageTransforms: pageImageTransformsRef.current.some(Boolean) ? pageImageTransformsRef.current : undefined,
       },
     );
   };
@@ -3623,16 +3755,33 @@ export const PenCanvas: React.FC<Props> = ({
           {/* ── 사진 첨부 ── */}
           <div className="flex items-center gap-0.5">
             <button type="button" title={pageImages[pageIdx] ? '사진 첨부됨' : '사진 첨부'}
-              onClick={() => imgInputRef.current?.click()}
+              onClick={() => { if (photoMoveMode) setPhotoMoveMode(false); imgInputRef.current?.click(); }}
               className={`px-1.5 py-1.5 md:px-2 md:py-2 cursor-pointer active:scale-95 shrink-0 relative ${pageImages[pageIdx]?'text-white':'text-white/40 hover:text-white/80'}`}>
               <ImageIcon className="w-4 h-4 md:w-5 md:h-5"/>
               {pageImages[pageIdx] && <span className="absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full bg-green-400"/>}
             </button>
             {pageImages[pageIdx] && (
-              <button type="button" title="사진 제거" onClick={removePageImage}
-                className="text-white/30 hover:text-red-400 cursor-pointer active:scale-95 p-0.5">
-                <X className="w-3.5 h-3.5"/>
-              </button>
+              <>
+                {/* 사진 이동 모드 토글 */}
+                <button type="button"
+                  title={photoMoveMode ? '이동 모드 종료' : '사진 위치 조정'}
+                  onClick={() => setPhotoMoveMode(v => !v)}
+                  className={`cursor-pointer active:scale-95 p-0.5 rounded ${photoMoveMode ? 'text-amber-400' : 'text-white/30 hover:text-white/60'}`}>
+                  <Move className="w-3.5 h-3.5"/>
+                </button>
+                {/* 사진 위치 초기화 (변환이 있을 때만) */}
+                {pageImageTransforms[pageIdx] && (
+                  <button type="button" title="사진 위치 초기화" onClick={resetImageTransform}
+                    className="text-white/30 hover:text-blue-400 cursor-pointer active:scale-95 p-0.5">
+                    <RotateCcw className="w-3.5 h-3.5"/>
+                  </button>
+                )}
+                {/* 사진 제거 */}
+                <button type="button" title="사진 제거" onClick={() => { setPhotoMoveMode(false); removePageImage(); }}
+                  className="text-white/30 hover:text-red-400 cursor-pointer active:scale-95 p-0.5">
+                  <X className="w-3.5 h-3.5"/>
+                </button>
+              </>
             )}
           </div>
           <input ref={imgInputRef} type="file" accept="image/*" className="hidden"
@@ -3878,6 +4027,18 @@ export const PenCanvas: React.FC<Props> = ({
             style={{touchAction:'none', userSelect:'none', willChange:'transform'}}/>
           <canvas ref={activeCanvasRef} className="absolute inset-0 w-full h-full block"
             style={{touchAction:'none', userSelect:'none', willChange:'transform', background:'transparent'}}/>
+          {/* ── 사진 이동 모드 오버레이 ── */}
+          {photoMoveMode && pageImages[pageIdx] && (
+            <div className="absolute inset-0 pointer-events-none"
+              style={{border:'2.5px dashed rgba(251,191,36,0.7)', borderRadius:4, boxSizing:'border-box', zIndex:10}}>
+              <div style={{position:'absolute', top:6, left:'50%', transform:'translateX(-50%)',
+                background:'rgba(0,0,0,0.55)', borderRadius:20, padding:'2px 10px',
+                display:'flex', alignItems:'center', gap:5}}>
+                <Move style={{width:12, height:12, color:'#fbbf24'}}/>
+                <span style={{color:'#fbbf24', fontSize:11, fontWeight:700, whiteSpace:'nowrap'}}>사진 이동 모드 — 드래그/핀치로 조절</span>
+              </div>
+            </div>
+          )}
           {/* ── 선택 도구 오버레이 캔버스 ── */}
           <canvas ref={selectionCanvasRef} className="absolute inset-0 w-full h-full block"
             style={{touchAction:'none', userSelect:'none', pointerEvents:'none', background:'transparent'}}/>

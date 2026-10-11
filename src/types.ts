@@ -52,6 +52,15 @@ export interface PenNote {
   coverGradient?: string;    // CSS gradient string
   // ── 개요 (목차) ────────────────────────────────────────────────────────────
   outline?: Array<{label: string; pageIdx: number}>;
+  // ── 사진 위치/크기 변환 ─────────────────────────────────────────────────────
+  pageImageTransforms?: (ImgTransform | undefined)[];
+}
+
+/** 페이지 첨부 사진의 위치/크기 변환 정보 */
+export interface ImgTransform {
+  x: number;     // 중앙 기준 오프셋 X (CSS 픽셀)
+  y: number;     // 중앙 기준 오프셋 Y (CSS 픽셀)
+  scale: number; // contain-fit 배율에 곱할 스케일 (1.0 = 기본 contain 크기)
 }
 
 /** 단어 바운딩 박스 — 좌표는 캔버스 CSS 픽셀 비율 (0.0~1.0) */

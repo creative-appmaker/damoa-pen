@@ -5,6 +5,7 @@ import {
   FileText, FolderOpen, Tag, Lock, Unlock, Settings, X, Plus,
   Undo2, Redo2, Search, Image as ImageIcon, Heart, Layers, Eye, EyeOff,
   MoreHorizontal, BookOpen, Palette, ScanText, Loader2, Move, RotateCcw,
+  FilePlus2, Download,
 } from 'lucide-react';
 import { PenNote, Folder, PenType, StrokePoint, SavedStroke, PenSettings, WordBox, PenLayer, ImgTransform } from '../types';
 
@@ -437,6 +438,11 @@ export const PenCanvas: React.FC<Props> = ({
   const [pdfPageCount,  setPdfPageCount] = useState<number | undefined>(editingNote?.pdfPageCount);
   const [pdfRenderMsg,  setPdfRenderMsg] = useState<string | null>(null); // "3/40페이지 렌더링 중..."
   const [pdfInvert,     setPdfInvert]    = useState(false); // PDF 반전 보기
+  const [showPdfInsertModal, setShowPdfInsertModal] = useState(false);
+  const [pdfInsertBefore,    setPdfInsertBefore]    = useState(0); // 이 인덱스 앞에 삽입
+  const [insertingPdf,       setInsertingPdf]       = useState(false);
+  const [exportingPdf,       setExportingPdf]       = useState(false);
+  const insertPdfInputRef = useRef<HTMLInputElement | null>(null);
   const [pageImages,    setPageImages]   = useState<(string|undefined)[]>(editingNote?.pageImages ?? []);
   const [pageImageTransforms, setPageImageTransforms] = useState<(ImgTransform|undefined)[]>(editingNote?.pageImageTransforms ?? []);
   const [photoMoveMode, setPhotoMoveMode] = useState(false);
@@ -2863,6 +2869,220 @@ export const PenCanvas: React.FC<Props> = ({
     }
   }, [loadPageBg, renderPdfPage, clearActive]);
 
+  // ── pdf-lib CDN 로더 ───────────────────────────────────────────────────────
+  const loadPdfLib = async (): Promise<any> => {
+    if ((window as any).PDFLib) return (window as any).PDFLib;
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js';
+      script.onload = () => resolve((window as any).PDFLib);
+      script.onerror = () => reject(new Error('pdf-lib 로드 실패'));
+      document.head.appendChild(script);
+    });
+  };
+
+  // base64 → Uint8Array 변환 (청크 방식, 스택 오버플로우 방지)
+  const base64ToBytes = (b64: string): Uint8Array => {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  };
+
+  // Uint8Array → base64 (청크 방식)
+  const bytesToBase64 = (bytes: Uint8Array): string => {
+    const CHUNK = 8192;
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(bin);
+  };
+
+  // ── PDF 삽입/병합 ──────────────────────────────────────────────────────────
+  // insertBefore: 이 페이지 인덱스 앞에 삽입 (pages.length = 맨 뒤)
+  const handleInsertPdf = useCallback(async (file: File, insertBefore: number) => {
+    if (!pdfBase64) return;
+    setInsertingPdf(true);
+    try {
+      const PDFLib = await loadPdfLib();
+      const { PDFDocument } = PDFLib;
+
+      // 현재 PDF와 삽입할 PDF 로드
+      const pdf1Doc = await PDFDocument.load(base64ToBytes(pdfBase64));
+      const pdf2Bytes = new Uint8Array(await file.arrayBuffer());
+      const pdf2Doc  = await PDFDocument.load(pdf2Bytes);
+
+      // 병합 PDF 생성
+      const mergedDoc = await PDFDocument.create();
+
+      // ① insert 위치 앞 페이지들의 원본 PDF 인덱스 수집
+      const pagesBefore = pages.slice(0, insertBefore);
+      const pagesAfter  = pages.slice(insertBefore);
+
+      // PDF1의 앞 부분 복사 (pdfPageIdx 기준)
+      if (pagesBefore.length > 0) {
+        const idxs = pagesBefore.map(p => p.pdfPageIdx ?? 0);
+        const copied = await mergedDoc.copyPages(pdf1Doc, idxs);
+        copied.forEach((p: any) => mergedDoc.addPage(p));
+      }
+
+      // PDF2 전체 복사
+      const pdf2Idxs = Array.from({ length: pdf2Doc.getPageCount() }, (_: unknown, i: number) => i);
+      const pdf2Copied = await mergedDoc.copyPages(pdf2Doc, pdf2Idxs);
+      pdf2Copied.forEach((p: any) => mergedDoc.addPage(p));
+
+      // PDF1의 뒷 부분 복사
+      if (pagesAfter.length > 0) {
+        const idxs = pagesAfter.map((p: Page) => p.pdfPageIdx ?? 0);
+        const copied = await mergedDoc.copyPages(pdf1Doc, idxs);
+        copied.forEach((p: any) => mergedDoc.addPage(p));
+      }
+
+      const mergedBytes = await mergedDoc.save();
+      const mergedBase64 = bytesToBase64(mergedBytes);
+
+      // pdf.js 재로드
+      const pdfjsLib = initPdfJs();
+      if (!pdfjsLib) throw new Error('pdf.js 없음');
+      const newPdf = await pdfjsLib.getDocument({ data: mergedBytes }).promise;
+      pdfDocRef.current = newPdf;
+      pdfCacheRef.current.forEach((bmp: ImageBitmap) => bmp.close());
+      pdfCacheRef.current.clear();
+
+      // 새 pages 배열 재구성 (merged PDF에서의 순서 = 0..totalPages-1)
+      const newPagesArr: Page[] = [];
+      let mergedIdx = 0;
+      // 앞 원본 페이지
+      for (let i = 0; i < pagesBefore.length; i++) {
+        newPagesArr.push({ ...pagesBefore[i], pdfPageIdx: mergedIdx++ });
+      }
+      // 삽입 PDF 페이지 (새 strokes 없음)
+      for (let i = 0; i < pdf2Doc.getPageCount(); i++) {
+        newPagesArr.push({ id: `p-ins-${Date.now()}-${i}`, strokes: [], pdfPageIdx: mergedIdx++ });
+      }
+      // 뒤 원본 페이지 (기존 strokes 보존)
+      for (let i = 0; i < pagesAfter.length; i++) {
+        newPagesArr.push({ ...pagesAfter[i], pdfPageIdx: mergedIdx++ });
+      }
+
+      // 상태 업데이트
+      setPdfBase64(mergedBase64);
+      setPdfPageCount(newPdf.numPages);
+      setPages(newPagesArr);
+      live.current.pages = newPagesArr;
+      strokesRef.current = (newPagesArr[live.current.pageIdx]?.strokes ?? []) as Stroke[];
+      baseImageRef.current = null;
+      setShowPdfInsertModal(false);
+      await loadPageBg(live.current.pageIdx);
+
+      // 네이티브 PDF도 업데이트
+      const { isNativePdfAvailable: isNative, openNativePdf } = await import('../lib/pdfNative');
+      if (isNative()) {
+        try { await openNativePdf(mergedBase64); } catch (_) {}
+      }
+    } catch (e) {
+      alert('PDF 삽입 실패: ' + (e as Error).message);
+    } finally {
+      setInsertingPdf(false);
+    }
+  }, [pdfBase64, pages, loadPageBg, initPdfJs]);
+
+  // ── PDF 내보내기 (손글씨 포함) ────────────────────────────────────────────
+  const handleExportToPdf = useCallback(async () => {
+    if (!pdfDocRef.current) return;
+    setExportingPdf(true);
+    try {
+      const PDFLib = await loadPdfLib();
+      const { PDFDocument } = PDFLib;
+      const exportDoc = await PDFDocument.create();
+
+      const baseCanvas = baseCanvasRef.current;
+      if (!baseCanvas) return;
+      const dpr  = Math.min(window.devicePixelRatio || 1, 2);
+      const cssW = baseCanvas.width / dpr;
+      const cssH = baseCanvas.height / dpr;
+
+      // 임시 오프스크린 캔버스
+      const offscreen = document.createElement('canvas');
+      offscreen.width  = Math.round(cssW * dpr);
+      offscreen.height = Math.round(cssH * dpr);
+      const ctx = offscreen.getContext('2d')!;
+
+      const curIdx = live.current.pageIdx;
+
+      for (let i = 0; i < pages.length; i++) {
+        ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,offscreen.width,offscreen.height); ctx.restore();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        // 배경색
+        drawBackground(ctx, cssW, cssH);
+
+        // PDF 배경 렌더
+        const pdfIdx = pages[i].pdfPageIdx ?? i;
+        const bmp = await renderPdfPage(pdfIdx);
+        if (bmp) {
+          const sc = Math.min(cssW / bmp.width, cssH / bmp.height);
+          const pw = bmp.width * sc, ph = bmp.height * sc;
+          ctx.drawImage(bmp, (cssW - pw) / 2, 0, pw, ph);
+        }
+
+        // 스트로크 (현재 페이지는 strokesRef, 나머지는 pages[i].strokes)
+        const strokes = (i === curIdx ? strokesRef.current : pages[i].strokes) as Stroke[];
+        strokes.forEach(s => drawStroke(s, ctx));
+
+        // JPEG 변환 → pdf-lib에 embed
+        const jpegDataUrl = offscreen.toDataURL('image/jpeg', 0.88);
+        const jpegB64 = jpegDataUrl.split(',')[1];
+        const jpegBytes = base64ToBytes(jpegB64);
+        const jpegImage = await exportDoc.embedJpg(jpegBytes);
+
+        const page = exportDoc.addPage([cssW, cssH]);
+        page.drawImage(jpegImage, { x: 0, y: 0, width: cssW, height: cssH });
+
+        // 진행 메시지
+        setPdfRenderMsg(`내보내기 ${i + 1}/${pages.length}`);
+      }
+
+      const pdfBytes = await exportDoc.save();
+      setPdfRenderMsg(null);
+
+      const exportName = (title || 'export').replace(/[/\\:*?"<>|]/g, '_') + '.pdf';
+
+      // Android Capacitor: Filesystem + Share
+      const Cap = (window as any).Capacitor;
+      if (Cap?.isNativePlatform?.()) {
+        const base64Out = bytesToBase64(pdfBytes);
+        try {
+          const { Filesystem } = Cap.Plugins;
+          const writeResult = await Filesystem.writeFile({
+            path: exportName,
+            data: base64Out,
+            directory: 'CACHE',
+          });
+          const { Share } = Cap.Plugins;
+          await Share.share({ title: exportName, url: writeResult.uri });
+        } catch (e2) {
+          alert('저장 실패: ' + (e2 as Error).message);
+        }
+      } else {
+        // 웹: blob 다운로드
+        const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = exportName;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch (e) {
+      alert('PDF 내보내기 실패: ' + (e as Error).message);
+      setPdfRenderMsg(null);
+    } finally {
+      setExportingPdf(false);
+    }
+  }, [pages, title, drawBackground, drawStroke, renderPdfPage]);
+
   const bgColor = paperType==='black'?'#1a1a1a':paperType==='yellow'?'#fef9c3':'#ffffff';
   const isHL = penType === 'highlighter';
 
@@ -3750,6 +3970,30 @@ export const PenCanvas: React.FC<Props> = ({
           <input ref={pdfInputRef} type="file" accept=".pdf" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) importPdf(f); e.target.value = ''; }}/>
 
+          {/* ── PDF 삽입 (PDF 열린 상태에서만) ── */}
+          {pdfBase64 && (
+            <>
+              <button type="button" title="PDF 삽입/병합"
+                disabled={insertingPdf}
+                onClick={() => { setPdfInsertBefore(pageIdx + 1); setShowPdfInsertModal(true); }}
+                className="px-1.5 py-1.5 md:px-2 md:py-2 cursor-pointer active:scale-95 shrink-0 disabled:opacity-40 text-amber-400 hover:text-amber-300">
+                <FilePlus2 className="w-4 h-4 md:w-5 md:h-5"/>
+              </button>
+              <button type="button" title={exportingPdf ? 'PDF 내보내는 중...' : 'PDF 내보내기 (손글씨 포함)'}
+                disabled={exportingPdf}
+                onClick={handleExportToPdf}
+                className="px-1.5 py-1.5 md:px-2 md:py-2 cursor-pointer active:scale-95 shrink-0 disabled:opacity-40 text-green-400 hover:text-green-300">
+                {exportingPdf ? <Loader2 className="w-4 h-4 md:w-5 md:h-5 animate-spin"/> : <Download className="w-4 h-4 md:w-5 md:h-5"/>}
+              </button>
+              <input ref={insertPdfInputRef} type="file" accept=".pdf" className="hidden"
+                onChange={e => {
+                  const f = e.target.files?.[0];
+                  if (f) handleInsertPdf(f, pdfInsertBefore);
+                  e.target.value = '';
+                }}/>
+            </>
+          )}
+
           {/* PDF 반전은 Row 1로 이동 */}
 
           {/* ── 사진 첨부 ── */}
@@ -3803,14 +4047,14 @@ export const PenCanvas: React.FC<Props> = ({
             {outline.length > 0 && <span className="absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full bg-blue-400"/>}
           </button>
 
-          {/* ── 페이지 병합 ── */}
-          {allNotes && allNotes.length > 1 && (
+          {/* ── 페이지 병합/삭제 ── */}
+          {(allNotes && allNotes.length > 1 || pdfBase64) && (
             <>
               <div className="w-px h-4 bg-white/15 mx-1 shrink-0"/>
               <button type="button" title="페이지 병합"
                 onClick={() => {
                   setMergeSelPages([pageIdx]);
-                  setMergeTargetNote(allNotes.find(n => n.id !== editingNote?.id)?.id ?? '');
+                  setMergeTargetNote(allNotes?.find(n => n.id !== editingNote?.id)?.id ?? '');
                   setMergeInsertAfter(-1);
                   setShowMergeModal(true);
                 }}
@@ -4416,6 +4660,55 @@ export const PenCanvas: React.FC<Props> = ({
           </div>
           );
         })()}
+
+        {/* ── PDF 삽입 모달 ─────────────────────────────────────────────────── */}
+        {showPdfInsertModal && pdfBase64 && (
+          <div className="absolute inset-0 z-[100] flex items-center justify-center"
+            style={{background:'rgba(0,0,0,0.7)', backdropFilter:'blur(4px)'}}
+            onClick={() => setShowPdfInsertModal(false)}>
+            <div className="bg-stone-900 border border-white/15 rounded-2xl shadow-2xl p-5 w-[320px] max-w-[92vw] flex flex-col gap-4"
+              onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between">
+                <span className="text-white font-black text-sm">PDF 삽입/병합</span>
+                <button type="button" onClick={() => setShowPdfInsertModal(false)}
+                  className="text-white/40 hover:text-white cursor-pointer"><X className="w-4 h-4"/></button>
+              </div>
+
+              {/* 삽입 위치 선택 */}
+              <div>
+                <div className="text-[11px] font-black text-white/40 mb-2">삽입 위치</div>
+                <div className="flex flex-col gap-1.5">
+                  {[
+                    { label: '맨 앞 (1페이지 앞)', value: 0 },
+                    { label: `현재 페이지 앞 (${pageIdx + 1}페이지 앞)`, value: pageIdx },
+                    { label: `현재 페이지 뒤 (${pageIdx + 1}페이지 뒤)`, value: pageIdx + 1 },
+                    { label: `맨 뒤 (${pages.length}페이지 뒤)`, value: pages.length },
+                  ].filter((opt, idx2, arr) => arr.findIndex(o => o.value === opt.value) === idx2)
+                   .map(opt => (
+                    <button key={opt.value} type="button"
+                      onClick={() => setPdfInsertBefore(opt.value)}
+                      className={`px-3 py-2 rounded-xl text-[12px] font-black cursor-pointer text-left transition-all ${pdfInsertBefore === opt.value ? 'bg-amber-600 text-white' : 'bg-white/5 text-white/60 hover:bg-white/10'}`}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* PDF 파일 선택 버튼 */}
+              <button type="button"
+                disabled={insertingPdf}
+                onClick={() => insertPdfInputRef.current?.click()}
+                className="w-full py-2.5 rounded-xl text-sm font-black cursor-pointer active:scale-95 disabled:opacity-40 flex items-center justify-center gap-2"
+                style={{background: insertingPdf ? 'rgba(180,83,9,0.5)' : 'rgba(217,119,6,0.9)', color:'#fff'}}>
+                {insertingPdf
+                  ? <><Loader2 className="w-4 h-4 animate-spin"/> 삽입 중...</>
+                  : <><FilePlus2 className="w-4 h-4"/> PDF 파일 선택 후 삽입</>}
+              </button>
+
+              <p className="text-[10px] text-white/30 text-center">선택한 PDF의 모든 페이지가 삽입 위치에 추가됩니다</p>
+            </div>
+          </div>
+        )}
 
         {/* ── 선택 도구 플로팅 메뉴 ───────────────────────────────────────── */}
         {isSelectTool && selectedIds.size > 0 && selBBox && !isDraggingSel && (

@@ -772,48 +772,46 @@ export const PenCanvas: React.FC<Props> = ({
     }
     const curPgIdx = live.current.pageIdx;
     const pType    = live.current.paperType;
-
-    // ── Pass 1: 형광펜을 PDF/글씨보다 먼저 (아래 레이어) ──────────────────
-    for (const layer of otherLayersRef.current) {
-      if (layer.hidden) continue;
-      (layer.pageStrokes[curPgIdx] ?? [])
-        .filter((s: Stroke) => s.penType === 'highlighter')
-        .forEach((s: Stroke) => drawStroke(s, ctx, pType));
-    }
-    if (!activeLayerHiddenRef.current) {
-      strokesRef.current
-        .filter((s: Stroke) => s.penType === 'highlighter')
-        .forEach((s: Stroke) => drawStroke(s, ctx, pType));
-    }
-
-    // ── PDF 페이지: multiply로 위에 덧씌움 ────────────────────────────────
-    // 흰 PDF 영역 × 형광펜색 = 형광펜색 (착색 O)
-    // 검은 PDF 글씨(0) × 어떤 색이든 = 0 (완벽한 검정 유지)
-    if (pageBgImageRef.current) {
+    const drawLayerStrokes = (hlOnly: boolean) => {
+      for (const layer of otherLayersRef.current) {
+        if (layer.hidden) continue;
+        (layer.pageStrokes[curPgIdx] ?? [])
+          .filter((s: Stroke) => hlOnly ? s.penType === 'highlighter' : s.penType !== 'highlighter')
+          .forEach((s: Stroke) => drawStroke(s, ctx, pType));
+      }
+      if (!activeLayerHiddenRef.current) {
+        strokesRef.current
+          .filter((s: Stroke) => hlOnly ? s.penType === 'highlighter' : s.penType !== 'highlighter')
+          .forEach((s: Stroke) => drawStroke(s, ctx, pType));
+      }
+    };
+    const drawPdfBg = (compOp?: GlobalCompositeOperation) => {
+      if (!pageBgImageRef.current) return;
       const pi = pageBgImageRef.current;
       const sc = Math.min(cssW / pi.width, cssH / pi.height);
       const pw = pi.width * sc, ph = pi.height * sc;
       const px = (cssW - pw) / 2;
       ctx.save();
-      ctx.globalCompositeOperation = 'multiply';
+      if (compOp) ctx.globalCompositeOperation = compOp;
       ctx.globalAlpha = 1;
       ctx.drawImage(pi, px, 0, pw, ph);
       ctx.restore();
-    }
+    };
 
-    if (baseImageRef.current) ctx.drawImage(baseImageRef.current, 0, 0, cssW, cssH);
-
-    // ── Pass 2: 비형광펜 스트로크 (형광펜·PDF 위에) ───────────────────────
-    for (const layer of otherLayersRef.current) {
-      if (layer.hidden) continue;
-      (layer.pageStrokes[curPgIdx] ?? [])
-        .filter((s: Stroke) => s.penType !== 'highlighter')
-        .forEach((s: Stroke) => drawStroke(s, ctx, pType));
-    }
-    if (!activeLayerHiddenRef.current) {
-      strokesRef.current
-        .filter((s: Stroke) => s.penType !== 'highlighter')
-        .forEach((s: Stroke) => drawStroke(s, ctx, pType));
+    if (pType === 'black') {
+      // 검정 배경: PDF 먼저(source-over) → HL → 펜
+      // (multiply 불가 — black×anything=black으로 모든 게 검정이 됨)
+      drawPdfBg();
+      if (baseImageRef.current) ctx.drawImage(baseImageRef.current, 0, 0, cssW, cssH);
+      drawLayerStrokes(true);   // HL
+      drawLayerStrokes(false);  // 펜
+    } else {
+      // 밝은 배경(white/yellow): HL 먼저 → PDF(multiply) → 펜
+      // PDF 검은 글씨(0) × anything = 0 → 완벽한 검정 유지
+      drawLayerStrokes(true);   // HL (PDF 아래)
+      drawPdfBg('multiply');    // PDF를 multiply로 덧씌움
+      if (baseImageRef.current) ctx.drawImage(baseImageRef.current, 0, 0, cssW, cssH);
+      drawLayerStrokes(false);  // 펜 (PDF 위)
     }
   }, [drawBackground]);
 
@@ -1004,22 +1002,27 @@ export const PenCanvas: React.FC<Props> = ({
     const pStrokes: Stroke[] = (live.current.pages[targetIdx]?.strokes ?? []) as Stroke[];
     const pType = live.current.paperType;
     // Pass 1: 형광펜 먼저
-    pStrokes.filter(s => s.penType === 'highlighter').forEach(s => drawStroke(s, ctx, pType));
-    // PDF: multiply로 덮기
-    if (pdfDocRef.current) {
+    const drawPdfBmpPeek = async (compOp?: GlobalCompositeOperation) => {
+      if (!pdfDocRef.current) return;
       const bmp = await renderPdfPage(targetIdx);
-      if (bmp) {
-        const sc = Math.min(cssW / bmp.width, cssH / bmp.height);
-        const pw = bmp.width * sc, ph = bmp.height * sc;
-        ctx.save();
-        ctx.globalCompositeOperation = 'multiply';
-        ctx.globalAlpha = 1;
-        ctx.drawImage(bmp, (cssW - pw) / 2, 0, pw, ph);
-        ctx.restore();
-      }
+      if (!bmp) return;
+      const sc = Math.min(cssW / bmp.width, cssH / bmp.height);
+      const pw = bmp.width * sc, ph = bmp.height * sc;
+      ctx.save();
+      if (compOp) ctx.globalCompositeOperation = compOp;
+      ctx.globalAlpha = 1;
+      ctx.drawImage(bmp, (cssW - pw) / 2, 0, pw, ph);
+      ctx.restore();
+    };
+    if (pType === 'black') {
+      await drawPdfBmpPeek();
+      pStrokes.filter(s => s.penType === 'highlighter').forEach(s => drawStroke(s, ctx, pType));
+      pStrokes.filter(s => s.penType !== 'highlighter').forEach(s => drawStroke(s, ctx, pType));
+    } else {
+      pStrokes.filter(s => s.penType === 'highlighter').forEach(s => drawStroke(s, ctx, pType));
+      await drawPdfBmpPeek('multiply');
+      pStrokes.filter(s => s.penType !== 'highlighter').forEach(s => drawStroke(s, ctx, pType));
     }
-    // Pass 2: 비형광펜 스트로크
-    pStrokes.filter(s => s.penType !== 'highlighter').forEach(s => drawStroke(s, ctx, pType));
   }, [drawBackground, renderPdfPage]);
 
   // ── pdf.js 초기화 헬퍼 ─────────────────────────────────────────────────
@@ -1161,7 +1164,7 @@ export const PenCanvas: React.FC<Props> = ({
         const { isNativePdfAvailable, openNativePdf } = await import('../lib/pdfNative');
         if (isNativePdfAvailable()) {
           try {
-            await openNativePdf(editingNote.pdfBase64);
+            await openNativePdf(editingNote.pdfBase64!);
             nativePdfReadyRef.current = true;
             await loadPageBg(startPage);
             // 백그라운드 미리 렌더
@@ -1181,7 +1184,7 @@ export const PenCanvas: React.FC<Props> = ({
         // pdf.js 폴백 (웹 / 네이티브 불가 시)
         const pdfjsLib = initPdfJs();
         if (pdfjsLib) {
-          const binary = atob(editingNote.pdfBase64);
+          const binary = atob(editingNote.pdfBase64!);
           const bytes  = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
           pdfjsLib.getDocument({ data: bytes.buffer }).promise
@@ -1254,7 +1257,9 @@ export const PenCanvas: React.FC<Props> = ({
     setNoteCoverColor(editingNote?.coverColor ?? '#8b5cf6');
     setNoteCoverGradient(editingNote?.coverGradient ?? 'linear-gradient(135deg,#8b5cf6,#ec4899)');
     setOutline(editingNote?.outline ?? []);
-    const pt = editingNote?.paperType ?? (darkMode ? 'black' : 'white');
+    // PDF 노트는 배경을 항상 흰색으로 (기존 저장된 black도 자동 보정)
+    const rawPt = editingNote?.paperType ?? (darkMode ? 'black' : 'white');
+    const pt = (editingNote?.pdfBase64 || editingNote?.pdfText) ? 'white' : rawPt;
     setPaperType(pt);
     live.current.paperType = pt;
 
@@ -2870,6 +2875,9 @@ export const PenCanvas: React.FC<Props> = ({
       }));
       setPages(newPages);
       setPageIdx(0);
+      // PDF는 흰 배경으로 자동 전환 (PDF 자체가 흰 배경이므로)
+      setPaperType('white');
+      live.current.paperType = 'white';
       setPdfBase64(base64);
       setPdfText(extractedText.trim());
       setPdfPageCount(pdf.numPages);
@@ -3062,24 +3070,27 @@ export const PenCanvas: React.FC<Props> = ({
         const strokes = (i === curIdx ? strokesRef.current : pages[i].strokes) as Stroke[];
         const eType = live.current.paperType;
 
-        // Pass 1: 형광펜 먼저 (PDF 아래)
-        strokes.filter(s => s.penType === 'highlighter').forEach(s => drawStroke(s, ctx, eType));
-
-        // PDF: multiply로 덮기 (검은 글씨 완벽 보존)
         const pdfIdx = pages[i].pdfPageIdx ?? i;
         const bmp = await renderPdfPage(pdfIdx);
-        if (bmp) {
+        const drawBmpExport = (compOp?: GlobalCompositeOperation) => {
+          if (!bmp) return;
           const sc = Math.min(cssW / bmp.width, cssH / bmp.height);
           const pw = bmp.width * sc, ph = bmp.height * sc;
           ctx.save();
-          ctx.globalCompositeOperation = 'multiply';
+          if (compOp) ctx.globalCompositeOperation = compOp;
           ctx.globalAlpha = 1;
           ctx.drawImage(bmp, (cssW - pw) / 2, 0, pw, ph);
           ctx.restore();
+        };
+        if (eType === 'black') {
+          drawBmpExport();
+          strokes.filter(s => s.penType === 'highlighter').forEach(s => drawStroke(s, ctx, eType));
+          strokes.filter(s => s.penType !== 'highlighter').forEach(s => drawStroke(s, ctx, eType));
+        } else {
+          strokes.filter(s => s.penType === 'highlighter').forEach(s => drawStroke(s, ctx, eType));
+          drawBmpExport('multiply');
+          strokes.filter(s => s.penType !== 'highlighter').forEach(s => drawStroke(s, ctx, eType));
         }
-
-        // Pass 2: 비형광펜 스트로크 (PDF 위)
-        strokes.filter(s => s.penType !== 'highlighter').forEach(s => drawStroke(s, ctx, eType));
 
         // JPEG 변환 → pdf-lib에 embed
         const jpegDataUrl = offscreen.toDataURL('image/jpeg', 0.88);

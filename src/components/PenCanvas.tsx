@@ -145,17 +145,25 @@ function applyPenStyle(
   ctx: CanvasRenderingContext2D,
   stroke: Pick<Stroke, 'color'|'size'|'penType'|'fountainIntensity'|'opacity'>,
   pressure = 1,
+  paperType: 'white'|'yellow'|'black' = 'white',
 ) {
   const { color, size, penType, fountainIntensity } = stroke;
   ctx.lineCap  = 'round';
   ctx.lineJoin = 'round';
 
   if (penType === 'highlighter') {
-    ctx.globalAlpha = stroke.opacity ?? 0.38;
+    // 밝은 종이(white/yellow): multiply → 글씨 선명도 유지, 배경만 착색
+    // 어두운 종이(black): source-over 유지 (multiply하면 모든 게 검정이 됨)
+    if (paperType === 'black') {
+      ctx.globalAlpha = stroke.opacity ?? 0.38;
+      ctx.globalCompositeOperation = 'source-over';
+    } else {
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'multiply';
+    }
     ctx.strokeStyle = color;
     ctx.fillStyle   = color;
     ctx.lineWidth   = Math.max(8, size * 4);
-    ctx.globalCompositeOperation = 'source-over';
   } else if (penType === 'fountain') {
     ctx.globalAlpha = 1;
     ctx.strokeStyle = color;
@@ -206,7 +214,7 @@ function laplacianSmooth(pts: Point[], iterations = 3): Point[] {
   return result;
 }
 
-function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
+function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D, paperType: 'white'|'yellow'|'black' = 'white') {
   const pts = stroke.points;
   if (!pts?.length) return;
 
@@ -214,7 +222,7 @@ function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
     // Per-segment varying width, quadratic bezier for smoothness
     if (pts.length === 1) {
       const p = pts[0];
-      applyPenStyle(ctx, stroke, p.pressure);
+      applyPenStyle(ctx, stroke, p.pressure, paperType);
       ctx.beginPath();
       ctx.arc(p.x, p.y, Math.max(0.4, ctx.lineWidth / 2), 0, Math.PI * 2);
       ctx.fill();
@@ -223,7 +231,7 @@ function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
     for (let i = 1; i < pts.length; i++) {
       const p1 = pts[i-1], p2 = pts[i];
       const avgP = (p1.pressure + p2.pressure) / 2;
-      applyPenStyle(ctx, stroke, avgP);
+      applyPenStyle(ctx, stroke, avgP, paperType);
       // 선분 방식: 베지어 대신 lineTo + 채움 원으로 gap 원천 차단
       ctx.beginPath();
       ctx.arc(p1.x, p1.y, Math.max(0.2, ctx.lineWidth / 2), 0, Math.PI * 2);
@@ -282,7 +290,7 @@ function drawStroke(stroke: Stroke, ctx: CanvasRenderingContext2D) {
 
   // Pen & highlighter: smooth bezier
   const avgP = pts.reduce((a, p) => a + p.pressure, 0) / pts.length;
-  applyPenStyle(ctx, stroke, avgP);
+  applyPenStyle(ctx, stroke, avgP, paperType);
 
   if (pts.length === 1) {
     ctx.beginPath();
@@ -310,13 +318,14 @@ function appendSegment(
   ctx: CanvasRenderingContext2D,
   stroke: Pick<Stroke, 'color'|'size'|'penType'|'fountainIntensity'|'opacity'>,
   pts: Point[],
+  paperType: 'white'|'yellow'|'black' = 'white',
 ) {
   if (pts.length < 2) return;
   const len = pts.length;
   const p1 = pts[len-2], p2 = pts[len-1];
 
   const avgP = (p1.pressure + p2.pressure) / 2;
-  applyPenStyle(ctx, stroke, avgP);
+  applyPenStyle(ctx, stroke, avgP, paperType);
 
   if (len === 2) {
     ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
@@ -779,11 +788,11 @@ export const PenCanvas: React.FC<Props> = ({
     for (const layer of otherLayersRef.current) {
       if (layer.hidden) continue; // 숨긴 레이어 스킵
       const ls = layer.pageStrokes[curPgIdx] ?? [];
-      ls.forEach(s => drawStroke(s, ctx));
+      ls.forEach(s => drawStroke(s, ctx, live.current.paperType));
     }
     // 활성 레이어 스트로크 (숨기지 않은 경우만)
     if (!activeLayerHiddenRef.current) {
-      strokesRef.current.forEach(s => drawStroke(s, ctx));
+      strokesRef.current.forEach(s => drawStroke(s, ctx, live.current.paperType));
     }
   }, [drawBackground]);
 
@@ -982,7 +991,7 @@ export const PenCanvas: React.FC<Props> = ({
     }
     // Strokes
     const pStrokes: Stroke[] = (live.current.pages[targetIdx]?.strokes ?? []) as Stroke[];
-    pStrokes.forEach(s => drawStroke(s, ctx));
+    pStrokes.forEach(s => drawStroke(s, ctx, live.current.paperType));
   }, [drawBackground, renderPdfPage]);
 
   // ── pdf.js 초기화 헬퍼 ─────────────────────────────────────────────────
@@ -1885,7 +1894,7 @@ export const PenCanvas: React.FC<Props> = ({
             const ctx = ac.getContext('2d')!;
             ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,ac.width,ac.height); ctx.restore();
             const strOpacity = pt === 'highlighter' ? live.current.hlOpacity : undefined;
-            appendSegment(ctx, { color: moveColor, size: ps, penType: pt, fountainIntensity: fi, ...(strOpacity !== undefined ? { opacity: strOpacity } : {}) } as Stroke, [hlStartRef.current, p]);
+            appendSegment(ctx, { color: moveColor, size: ps, penType: pt, fountainIntensity: fi, ...(strOpacity !== undefined ? { opacity: strOpacity } : {}) } as Stroke, [hlStartRef.current, p], live.current.paperType);
           }
           // 각도 계산 (0° = 수평, 90° = 수직)
           const dx2 = p.x - hlStartRef.current.x, dy2 = p.y - hlStartRef.current.y;
@@ -1908,7 +1917,7 @@ export const PenCanvas: React.FC<Props> = ({
           : p;
         pts.push(smoothed);
         const ac = activeCanvasRef.current;
-        if (ac) appendSegment(ac.getContext('2d')!, { color: moveColor, size: ps, penType: pt, fountainIntensity: fi } as Stroke, pts);
+        if (ac) appendSegment(ac.getContext('2d')!, { color: moveColor, size: ps, penType: pt, fountainIntensity: fi } as Stroke, pts, live.current.paperType);
       }
     };
 
@@ -2042,7 +2051,7 @@ export const PenCanvas: React.FC<Props> = ({
         // (redrawBase() 대신 → O(P_new), 획 수에 무관하게 일정 속도 유지)
         // 레이어가 숨겨진 경우 base에 그리지 않음 (redrawBase와 동일한 가드)
         const base = baseCanvasRef.current;
-        if (base && !activeLayerHiddenRef.current) drawStroke(stroke, base.getContext('2d')!);
+        if (base && !activeLayerHiddenRef.current) drawStroke(stroke, base.getContext('2d')!, live.current.paperType);
         clearActive();
         // 자동 저장 (탭 전환 시 손글씨 유지) — 500ms 디바운스
         if (onAutoSave) {
@@ -3029,7 +3038,7 @@ export const PenCanvas: React.FC<Props> = ({
 
         // 스트로크 (현재 페이지는 strokesRef, 나머지는 pages[i].strokes)
         const strokes = (i === curIdx ? strokesRef.current : pages[i].strokes) as Stroke[];
-        strokes.forEach(s => drawStroke(s, ctx));
+        strokes.forEach(s => drawStroke(s, ctx, live.current.paperType));
 
         // JPEG 변환 → pdf-lib에 embed
         const jpegDataUrl = offscreen.toDataURL('image/jpeg', 0.88);

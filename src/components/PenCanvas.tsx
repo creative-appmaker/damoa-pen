@@ -1257,11 +1257,13 @@ export const PenCanvas: React.FC<Props> = ({
     setNoteCoverColor(editingNote?.coverColor ?? '#8b5cf6');
     setNoteCoverGradient(editingNote?.coverGradient ?? 'linear-gradient(135deg,#8b5cf6,#ec4899)');
     setOutline(editingNote?.outline ?? []);
-    // PDF 노트는 배경을 항상 흰색으로 (기존 저장된 black도 자동 보정)
+    // PDF 노트는 배경을 항상 흰색 + 줄 없음으로 (기존 저장된 black도 자동 보정)
+    const isPdfNote = !!(editingNote?.pdfBase64 || editingNote?.pdfText);
     const rawPt = editingNote?.paperType ?? (darkMode ? 'black' : 'white');
-    const pt = (editingNote?.pdfBase64 || editingNote?.pdfText) ? 'white' : rawPt;
+    const pt = isPdfNote ? 'white' : rawPt;
     setPaperType(pt);
     live.current.paperType = pt;
+    if (isPdfNote) { setShowLines(false); live.current.showLines = false; }
 
     // 펜 설정 복원 (저장된 설정 우선, 없으면 기본값)
     const ps = editingNote?.penSettings;
@@ -2875,9 +2877,11 @@ export const PenCanvas: React.FC<Props> = ({
       }));
       setPages(newPages);
       setPageIdx(0);
-      // PDF는 흰 배경으로 자동 전환 (PDF 자체가 흰 배경이므로)
+      // PDF는 흰 배경 + 줄 없음으로 자동 전환
       setPaperType('white');
       live.current.paperType = 'white';
+      setShowLines(false);
+      live.current.showLines = false;
       setPdfBase64(base64);
       setPdfText(extractedText.trim());
       setPdfPageCount(pdf.numPages);

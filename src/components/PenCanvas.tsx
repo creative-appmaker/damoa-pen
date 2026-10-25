@@ -146,25 +146,18 @@ function applyPenStyle(
   stroke: Pick<Stroke, 'color'|'size'|'penType'|'fountainIntensity'|'opacity'>,
   pressure = 1,
   paperType: 'white'|'yellow'|'black' = 'white',
-  forLiveCanvas = false,
 ) {
   const { color, size, penType, fountainIntensity } = stroke;
   ctx.lineCap  = 'round';
   ctx.lineJoin = 'round';
 
   if (penType === 'highlighter') {
-    // multiply 는 불투명한 배경(베이스 캔버스)에서만 동작.
-    // 투명 배경(activeCanvas, live 드로잉)에 multiply 적용 시
-    // α_dest=0이므로 수식상 solid color가 되어 글씨를 완전히 덮어버림.
-    // → forLiveCanvas=true(라이브 드로잉)이거나 black 종이는 source-over 유지.
-    if (paperType === 'black' || forLiveCanvas) {
-      ctx.globalAlpha = stroke.opacity ?? 0.38;
-      ctx.globalCompositeOperation = 'source-over';
-    } else {
-      // 베이스 캔버스(밝은 종이): multiply → 글씨 선명도 유지, 배경만 착색
-      ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = 'multiply';
-    }
+    // 형광펜은 항상 source-over + opacity.
+    // 글씨 선명도는 렌더링 레이어 순서로 보장:
+    // redrawBase에서 HL → PDF(multiply로 덧씌움) → 펜 순서로 그려
+    // PDF 검은 글씨(0) × anything = 0 = 완벽한 검정 유지.
+    ctx.globalAlpha = stroke.opacity ?? 0.38;
+    ctx.globalCompositeOperation = 'source-over';
     ctx.strokeStyle = color;
     ctx.fillStyle   = color;
     ctx.lineWidth   = Math.max(8, size * 4);
@@ -329,8 +322,7 @@ function appendSegment(
   const p1 = pts[len-2], p2 = pts[len-1];
 
   const avgP = (p1.pressure + p2.pressure) / 2;
-  // live canvas(activeCanvasRef)는 투명 배경 → multiply 금지, source-over 유지
-  applyPenStyle(ctx, stroke, avgP, paperType, true);
+  applyPenStyle(ctx, stroke, avgP, paperType);
 
   if (len === 2) {
     ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
@@ -778,26 +770,50 @@ export const PenCanvas: React.FC<Props> = ({
       ctx.globalAlpha = 1;
       ctx.drawImage(img, ix, iy, iw, ih);
     }
-    // PDF 페이지 배경 (종이색 위, 스트로크 아래) — contain 방식으로 원본 비율 유지 (ImageBitmap 무손실)
-    if (pageBgImageRef.current) {
-      const pi = pageBgImageRef.current; // ImageBitmap
-      const sc = Math.min(cssW / pi.width, cssH / pi.height); // .width/.height (ImageBitmap API)
-      const pw = pi.width * sc, ph = pi.height * sc;
-      const px = (cssW - pw) / 2; // 좌우 중앙
-      ctx.globalAlpha = 1;
-      ctx.drawImage(pi, px, 0, pw, ph); // 상단 정렬
-    }
-    if (baseImageRef.current) ctx.drawImage(baseImageRef.current, 0, 0, cssW, cssH);
-    // 비활성 레이어 스트로크 먼저 렌더 (활성 레이어 아래에 표시)
     const curPgIdx = live.current.pageIdx;
+    const pType    = live.current.paperType;
+
+    // ── Pass 1: 형광펜을 PDF/글씨보다 먼저 (아래 레이어) ──────────────────
     for (const layer of otherLayersRef.current) {
-      if (layer.hidden) continue; // 숨긴 레이어 스킵
-      const ls = layer.pageStrokes[curPgIdx] ?? [];
-      ls.forEach(s => drawStroke(s, ctx, live.current.paperType));
+      if (layer.hidden) continue;
+      (layer.pageStrokes[curPgIdx] ?? [])
+        .filter((s: Stroke) => s.penType === 'highlighter')
+        .forEach((s: Stroke) => drawStroke(s, ctx, pType));
     }
-    // 활성 레이어 스트로크 (숨기지 않은 경우만)
     if (!activeLayerHiddenRef.current) {
-      strokesRef.current.forEach(s => drawStroke(s, ctx, live.current.paperType));
+      strokesRef.current
+        .filter((s: Stroke) => s.penType === 'highlighter')
+        .forEach((s: Stroke) => drawStroke(s, ctx, pType));
+    }
+
+    // ── PDF 페이지: multiply로 위에 덧씌움 ────────────────────────────────
+    // 흰 PDF 영역 × 형광펜색 = 형광펜색 (착색 O)
+    // 검은 PDF 글씨(0) × 어떤 색이든 = 0 (완벽한 검정 유지)
+    if (pageBgImageRef.current) {
+      const pi = pageBgImageRef.current;
+      const sc = Math.min(cssW / pi.width, cssH / pi.height);
+      const pw = pi.width * sc, ph = pi.height * sc;
+      const px = (cssW - pw) / 2;
+      ctx.save();
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.globalAlpha = 1;
+      ctx.drawImage(pi, px, 0, pw, ph);
+      ctx.restore();
+    }
+
+    if (baseImageRef.current) ctx.drawImage(baseImageRef.current, 0, 0, cssW, cssH);
+
+    // ── Pass 2: 비형광펜 스트로크 (형광펜·PDF 위에) ───────────────────────
+    for (const layer of otherLayersRef.current) {
+      if (layer.hidden) continue;
+      (layer.pageStrokes[curPgIdx] ?? [])
+        .filter((s: Stroke) => s.penType !== 'highlighter')
+        .forEach((s: Stroke) => drawStroke(s, ctx, pType));
+    }
+    if (!activeLayerHiddenRef.current) {
+      strokesRef.current
+        .filter((s: Stroke) => s.penType !== 'highlighter')
+        .forEach((s: Stroke) => drawStroke(s, ctx, pType));
     }
   }, [drawBackground]);
 
@@ -971,16 +987,7 @@ export const PenCanvas: React.FC<Props> = ({
     const cssW = base.width / dpr, cssH = base.height / dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     drawBackground(ctx, cssW, cssH);
-    // PDF background
-    if (pdfDocRef.current) {
-      const bmp = await renderPdfPage(targetIdx);
-      if (bmp) {
-        const sc = Math.min(cssW / bmp.width, cssH / bmp.height);
-        const pw = bmp.width * sc, ph = bmp.height * sc;
-        ctx.drawImage(bmp, (cssW - pw) / 2, 0, pw, ph);
-      }
-    }
-    // Attached image (위치/크기 변환 포함)
+    // Attached image
     const imgDataUrl = pageImagesRef.current[targetIdx];
     if (imgDataUrl) {
       const t = pageImageTransformsRef.current[targetIdx];
@@ -994,9 +1001,25 @@ export const PenCanvas: React.FC<Props> = ({
       };
       img.src = imgDataUrl;
     }
-    // Strokes
     const pStrokes: Stroke[] = (live.current.pages[targetIdx]?.strokes ?? []) as Stroke[];
-    pStrokes.forEach(s => drawStroke(s, ctx, live.current.paperType));
+    const pType = live.current.paperType;
+    // Pass 1: 형광펜 먼저
+    pStrokes.filter(s => s.penType === 'highlighter').forEach(s => drawStroke(s, ctx, pType));
+    // PDF: multiply로 덮기
+    if (pdfDocRef.current) {
+      const bmp = await renderPdfPage(targetIdx);
+      if (bmp) {
+        const sc = Math.min(cssW / bmp.width, cssH / bmp.height);
+        const pw = bmp.width * sc, ph = bmp.height * sc;
+        ctx.save();
+        ctx.globalCompositeOperation = 'multiply';
+        ctx.globalAlpha = 1;
+        ctx.drawImage(bmp, (cssW - pw) / 2, 0, pw, ph);
+        ctx.restore();
+      }
+    }
+    // Pass 2: 비형광펜 스트로크
+    pStrokes.filter(s => s.penType !== 'highlighter').forEach(s => drawStroke(s, ctx, pType));
   }, [drawBackground, renderPdfPage]);
 
   // ── pdf.js 초기화 헬퍼 ─────────────────────────────────────────────────
@@ -2056,7 +2079,11 @@ export const PenCanvas: React.FC<Props> = ({
         // (redrawBase() 대신 → O(P_new), 획 수에 무관하게 일정 속도 유지)
         // 레이어가 숨겨진 경우 base에 그리지 않음 (redrawBase와 동일한 가드)
         const base = baseCanvasRef.current;
-        if (base && !activeLayerHiddenRef.current) drawStroke(stroke, base.getContext('2d')!, live.current.paperType);
+        if (base && !activeLayerHiddenRef.current) {
+          // 형광펜은 레이어 순서 보장을 위해 전체 재렌더 (HL→PDF→펜 순서)
+          if (stroke.penType === 'highlighter') { redrawBase(); }
+          else { drawStroke(stroke, base.getContext('2d')!, live.current.paperType); }
+        }
         clearActive();
         // 자동 저장 (탭 전환 시 손글씨 유지) — 500ms 디바운스
         if (onAutoSave) {
@@ -3032,18 +3059,27 @@ export const PenCanvas: React.FC<Props> = ({
         // 배경색
         drawBackground(ctx, cssW, cssH);
 
-        // PDF 배경 렌더
+        const strokes = (i === curIdx ? strokesRef.current : pages[i].strokes) as Stroke[];
+        const eType = live.current.paperType;
+
+        // Pass 1: 형광펜 먼저 (PDF 아래)
+        strokes.filter(s => s.penType === 'highlighter').forEach(s => drawStroke(s, ctx, eType));
+
+        // PDF: multiply로 덮기 (검은 글씨 완벽 보존)
         const pdfIdx = pages[i].pdfPageIdx ?? i;
         const bmp = await renderPdfPage(pdfIdx);
         if (bmp) {
           const sc = Math.min(cssW / bmp.width, cssH / bmp.height);
           const pw = bmp.width * sc, ph = bmp.height * sc;
+          ctx.save();
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.globalAlpha = 1;
           ctx.drawImage(bmp, (cssW - pw) / 2, 0, pw, ph);
+          ctx.restore();
         }
 
-        // 스트로크 (현재 페이지는 strokesRef, 나머지는 pages[i].strokes)
-        const strokes = (i === curIdx ? strokesRef.current : pages[i].strokes) as Stroke[];
-        strokes.forEach(s => drawStroke(s, ctx, live.current.paperType));
+        // Pass 2: 비형광펜 스트로크 (PDF 위)
+        strokes.filter(s => s.penType !== 'highlighter').forEach(s => drawStroke(s, ctx, eType));
 
         // JPEG 변환 → pdf-lib에 embed
         const jpegDataUrl = offscreen.toDataURL('image/jpeg', 0.88);

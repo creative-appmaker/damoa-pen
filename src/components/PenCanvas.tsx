@@ -146,18 +146,22 @@ function applyPenStyle(
   stroke: Pick<Stroke, 'color'|'size'|'penType'|'fountainIntensity'|'opacity'>,
   pressure = 1,
   paperType: 'white'|'yellow'|'black' = 'white',
+  forLiveCanvas = false,
 ) {
   const { color, size, penType, fountainIntensity } = stroke;
   ctx.lineCap  = 'round';
   ctx.lineJoin = 'round';
 
   if (penType === 'highlighter') {
-    // 밝은 종이(white/yellow): multiply → 글씨 선명도 유지, 배경만 착색
-    // 어두운 종이(black): source-over 유지 (multiply하면 모든 게 검정이 됨)
-    if (paperType === 'black') {
+    // multiply 는 불투명한 배경(베이스 캔버스)에서만 동작.
+    // 투명 배경(activeCanvas, live 드로잉)에 multiply 적용 시
+    // α_dest=0이므로 수식상 solid color가 되어 글씨를 완전히 덮어버림.
+    // → forLiveCanvas=true(라이브 드로잉)이거나 black 종이는 source-over 유지.
+    if (paperType === 'black' || forLiveCanvas) {
       ctx.globalAlpha = stroke.opacity ?? 0.38;
       ctx.globalCompositeOperation = 'source-over';
     } else {
+      // 베이스 캔버스(밝은 종이): multiply → 글씨 선명도 유지, 배경만 착색
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'multiply';
     }
@@ -325,7 +329,8 @@ function appendSegment(
   const p1 = pts[len-2], p2 = pts[len-1];
 
   const avgP = (p1.pressure + p2.pressure) / 2;
-  applyPenStyle(ctx, stroke, avgP, paperType);
+  // live canvas(activeCanvasRef)는 투명 배경 → multiply 금지, source-over 유지
+  applyPenStyle(ctx, stroke, avgP, paperType, true);
 
   if (len === 2) {
     ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();

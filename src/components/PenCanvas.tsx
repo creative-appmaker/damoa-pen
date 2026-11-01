@@ -1167,6 +1167,12 @@ export const PenCanvas: React.FC<Props> = ({
             await openNativePdf(editingNote.pdfBase64!);
             nativePdfReadyRef.current = true;
             await loadPageBg(startPage);
+            // 썸네일 없는 기존 PDF 노트 자동 갱신
+            if (!editingNote.dataUrl) {
+              await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+              const raw = getExportDataUrl();
+              if (raw) { const thumb = await compress(raw, 1200, 0.75); if (thumb) onSave(thumb, editingNote.ocrText ?? '', editingNote.title ?? '', 'white', [], undefined, editingNote.pdfBase64, editingNote.pdfText, editingNote.pdfPageCount, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined); }
+            }
             // 백그라운드 미리 렌더
             for (let i = 0; i < prefetchEnd; i++) {
               if (i === startPage) continue;
@@ -1191,6 +1197,12 @@ export const PenCanvas: React.FC<Props> = ({
             .then(async (pdf: any) => {
               pdfDocRef.current = pdf;
               await loadPageBg(startPage);
+              // 썸네일 없는 기존 PDF 노트 자동 갱신
+              if (!editingNote.dataUrl) {
+                await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+                const raw = getExportDataUrl();
+                if (raw) { const thumb = await compress(raw, 1200, 0.75); if (thumb) onSave(thumb, editingNote.ocrText ?? '', editingNote.title ?? '', 'white', [], undefined, editingNote.pdfBase64, editingNote.pdfText, editingNote.pdfPageCount, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined); }
+              }
               for (let i = 1; i < prefetchEnd; i++) {
                 setPdfRenderMsg(`PDF 미리 렌더 ${i+1}/${count}...`);
                 await renderPdfPage(i);
@@ -2892,12 +2904,16 @@ export const PenCanvas: React.FC<Props> = ({
       await loadPageBg(0);
       setTimeout(() => clearActive(), 30);
 
-      // ⑥ PDF 노트 자동저장 (새 탭인 경우 noteId 부여 → 탭 전환 시 PDF 상태 보존)
+      // ⑥ PDF 노트 자동저장 — 1페이지 렌더 완료 후 썸네일 캡처해서 저장
       if (!editingNote?.id) {
         skipReinitForPdfRef.current = true;
         const noteTitle = title || file.name.replace(/\.pdf$/i, '');
+        // redrawBase()가 동기적으로 완료될 때까지 한 프레임 대기
+        await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+        const rawThumb = getExportDataUrl();
+        const thumbUrl = rawThumb ? await compress(rawThumb, 1200, 0.75) : '';
         onSave(
-          '', extractedText.trim(), noteTitle, live.current.paperType,
+          thumbUrl, extractedText.trim(), noteTitle, live.current.paperType,
           [], undefined,
           base64, extractedText.trim(), pdf.numPages,
           undefined, undefined, undefined,
@@ -3074,8 +3090,9 @@ export const PenCanvas: React.FC<Props> = ({
         const strokes = (i === curIdx ? strokesRef.current : pages[i].strokes) as Stroke[];
         const eType = live.current.paperType;
 
-        const pdfIdx = pages[i].pdfPageIdx ?? i;
-        const bmp = await renderPdfPage(pdfIdx);
+        // pdfPageIdx가 없는 페이지(삽입 빈 노트)는 PDF 배경 없이 손글씨만
+        const hasPdf = pages[i].pdfPageIdx !== undefined;
+        const bmp = hasPdf ? await renderPdfPage(pages[i].pdfPageIdx!) : null;
         const drawBmpExport = (compOp?: GlobalCompositeOperation) => {
           if (!bmp) return;
           const sc = Math.min(cssW / bmp.width, cssH / bmp.height);

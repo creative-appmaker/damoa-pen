@@ -75,14 +75,24 @@ export const NoteCard: React.FC<Props> = ({
   const sq = searchQuery?.trim() ?? '';
   const bgColor   = note.paperType==='black'?'#1a1a1a':note.paperType==='yellow'?'#fef9c3':'#ffffff';
   const textColor = note.paperType==='black'?'#e2e8f0':'#1c1917';
+  const hasPdf    = !!note.pdfBase64;
+  // PDF 노트는 카드 배경을 다크모드 CSS 클래스로 처리 (인라인 bgColor 사용 안 함)
+  // 썸네일 이미지는 PDF 원본 그대로 표시하되, 다크모드에서 눈부심 방지 오버레이 추가
+  const cardBgStyle: React.CSSProperties = hasPdf ? {} : { backgroundColor: bgColor };
+  const cardBgClass = hasPdf ? 'bg-white dark:bg-slate-800' : '';
+  const cardTextStyle: React.CSSProperties = hasPdf ? {} : { color: textColor };
+  const cardTextClass = hasPdf ? 'text-stone-900 dark:text-slate-100' : '';
+  // 다크모드에서 PDF 흰 배경 썸네일 위에 반투명 어두운 오버레이
+  const pdfDarkOverlay = hasPdf ? (
+    <div className="absolute inset-0 bg-black/0 dark:bg-black/35 pointer-events-none z-10"/>
+  ) : null;
   // 커버 배경 스타일
   const coverStyle: React.CSSProperties = (() => {
     if (note.coverType === 'gradient' && note.coverGradient) return { background: note.coverGradient };
     if (note.coverType === 'color' && note.coverColor) return { backgroundColor: note.coverColor };
-    return { backgroundColor: bgColor };
+    return hasPdf ? {} : { backgroundColor: bgColor };
   })();
   const hasCover = note.coverType && note.coverType !== 'none' && (note.coverColor || note.coverGradient);
-  const hasPdf    = !!note.pdfBase64;
   const hasOcr    = !!(note.ocrText?.trim() || note.pageOcrTexts?.some(t => t?.trim()));
   const hasStrokes = !!(note.pageStrokes?.some(p => p.length > 0));
   const ocrDot = hasOcr
@@ -194,7 +204,8 @@ export const NoteCard: React.FC<Props> = ({
           onClick={() => selectMode ? onSelect?.(note) : onEdit(note)}>
         {selOverlay}
           {/* 썸네일 */}
-          <div className="w-12 h-14 rounded-xl overflow-hidden shrink-0 border border-stone-200 dark:border-slate-700" style={{backgroundColor:bgColor}}>
+          <div className="relative w-12 h-14 rounded-xl overflow-hidden shrink-0 border border-stone-200 dark:border-slate-700" style={hasPdf ? {backgroundColor:'#ffffff'} : {backgroundColor:bgColor}}>
+            {pdfDarkOverlay}
             {note.dataUrl
               ? <img src={note.dataUrl} alt="" className="w-full h-full object-cover object-top" loading="lazy"/>
               : <div className="w-full h-full flex items-center justify-center text-xl opacity-20">✏️</div>}
@@ -239,14 +250,15 @@ export const NoteCard: React.FC<Props> = ({
       <>
         {movePopup}
         <div {...longPressProps}
-          className="group relative rounded-xl overflow-hidden border border-stone-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-all cursor-pointer active:scale-[0.97] flex flex-col"
-          style={{backgroundColor:bgColor}}
+          className={`group relative rounded-xl overflow-hidden border border-stone-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-all cursor-pointer active:scale-[0.97] flex flex-col ${cardBgClass}`}
+          style={cardBgStyle}
           onClick={() => selectMode ? onSelect?.(note) : onEdit(note)}>
           {selOverlay}
           <div className="relative aspect-[3/4] overflow-hidden">
+            {pdfDarkOverlay}
             {note.dataUrl
               ? <img src={note.dataUrl} alt="" className="w-full h-full object-cover object-top" loading="lazy"/>
-              : <div className="w-full h-full flex items-center justify-center" style={{backgroundColor:bgColor}}><span className="text-3xl opacity-20">✏️</span></div>}
+              : <div className="w-full h-full flex items-center justify-center" style={hasPdf ? {} : {backgroundColor:bgColor}}><span className="text-3xl opacity-20">✏️</span></div>}
             {note.isPinned && (
               <div className="absolute top-1 left-1 w-4 h-4 bg-amber-400 rounded-full flex items-center justify-center">
                 <Pin className="w-2 h-2 text-stone-900 fill-stone-900"/>
@@ -257,9 +269,9 @@ export const NoteCard: React.FC<Props> = ({
               <Trash2 className="w-3 h-3 text-white"/>
             </button>
           </div>
-          <div className="px-1.5 py-1" style={{backgroundColor:bgColor}}>
-            <div className="flex items-center gap-1"><span>{ocrDot}</span><div className="text-[10px] font-black truncate" style={{color:textColor}}>{sq ? hl(note.title || '제목 없음', sq) : (note.title || '제목 없음')}</div></div>
-            <div className="text-[9px] opacity-50 font-bold" style={{color:textColor}}>{fmtDate(note.updatedAt)}</div>
+          <div className={`px-1.5 py-1 ${cardBgClass}`} style={cardBgStyle}>
+            <div className="flex items-center gap-1"><span>{ocrDot}</span><div className={`text-[10px] font-black truncate ${cardTextClass}`} style={cardTextStyle}>{sq ? hl(note.title || '제목 없음', sq) : (note.title || '제목 없음')}</div></div>
+            <div className={`text-[9px] opacity-50 font-bold ${cardTextClass}`} style={cardTextStyle}>{fmtDate(note.updatedAt)}</div>
           </div>
         </div>
       </>
@@ -272,16 +284,17 @@ export const NoteCard: React.FC<Props> = ({
       <>
         {movePopup}
         <div {...longPressProps}
-          className="group relative rounded-xl overflow-hidden border border-stone-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-all cursor-pointer active:scale-[0.97] flex flex-col"
-          style={hasCover ? coverStyle : {backgroundColor:bgColor}}
+          className={`group relative rounded-xl overflow-hidden border border-stone-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-all cursor-pointer active:scale-[0.97] flex flex-col ${!hasCover ? cardBgClass : ''}`}
+          style={hasCover ? coverStyle : cardBgStyle}
           onClick={() => selectMode ? onSelect?.(note) : onEdit(note)}>
           {selOverlay}
           <div className="relative aspect-square overflow-hidden">
+            {!hasCover && pdfDarkOverlay}
             {hasCover
               ? <div className="w-full h-full" style={coverStyle}/>
               : note.dataUrl
                 ? <img src={note.dataUrl} alt="" className="w-full h-full object-cover object-top" loading="lazy"/>
-                : <div className="w-full h-full flex items-center justify-center" style={{backgroundColor:bgColor}}><span className="text-2xl opacity-20">✏️</span></div>
+                : <div className={`w-full h-full flex items-center justify-center ${cardBgClass}`} style={cardBgStyle}><span className="text-2xl opacity-20">✏️</span></div>
             }
             {note.isPinned && (
               <div className="absolute top-1 left-1 w-3.5 h-3.5 bg-amber-400 rounded-full flex items-center justify-center">
@@ -293,8 +306,8 @@ export const NoteCard: React.FC<Props> = ({
               <Trash2 className="w-2.5 h-2.5 text-white"/>
             </button>
           </div>
-          <div className="px-1.5 py-0.5" style={hasCover ? {} : {backgroundColor:bgColor}}>
-            <div className="text-[9px] font-black truncate" style={{color: hasCover && note.coverType==='color' ? '#fff' : textColor}}>
+          <div className={`px-1.5 py-0.5 ${!hasCover ? cardBgClass : ''}`} style={hasCover ? {} : cardBgStyle}>
+            <div className={`text-[9px] font-black truncate ${!hasCover ? cardTextClass : ''}`} style={hasCover && note.coverType==='color' ? {color:'#fff'} : cardTextStyle}>
               {sq ? hl(note.title || '제목 없음', sq) : (note.title || '제목 없음')}
             </div>
           </div>
@@ -309,14 +322,15 @@ export const NoteCard: React.FC<Props> = ({
       <>
         {movePopup}
         <div {...longPressProps}
-          className="group relative rounded-2xl overflow-hidden border border-stone-200 dark:border-slate-700 shadow-sm hover:shadow-lg transition-all cursor-pointer active:scale-[0.99] flex flex-col"
-          style={{backgroundColor:bgColor}}
+          className={`group relative rounded-2xl overflow-hidden border border-stone-200 dark:border-slate-700 shadow-sm hover:shadow-lg transition-all cursor-pointer active:scale-[0.99] flex flex-col ${cardBgClass}`}
+          style={cardBgStyle}
           onClick={() => selectMode ? onSelect?.(note) : onEdit(note)}>
           {selOverlay}
           <div className="relative aspect-[4/3] overflow-hidden">
+            {pdfDarkOverlay}
             {note.dataUrl
               ? <img src={note.dataUrl} alt="" className="w-full h-full object-cover object-top" loading="lazy"/>
-              : <div className="w-full h-full flex items-center justify-center" style={{backgroundColor:bgColor}}><span className="text-6xl opacity-20">✏️</span></div>}
+              : <div className={`w-full h-full flex items-center justify-center ${cardBgClass}`} style={cardBgStyle}><span className="text-6xl opacity-20">✏️</span></div>}
             {note.isPinned && (
               <div className="absolute top-2 left-2 w-6 h-6 bg-amber-400 rounded-full flex items-center justify-center shadow-md">
                 <Pin className="w-3 h-3 text-stone-900 fill-stone-900"/>
@@ -334,10 +348,10 @@ export const NoteCard: React.FC<Props> = ({
               <Pin className={`w-3.5 h-3.5 ${note.isPinned?'text-stone-900 fill-stone-900':'text-white'}`}/>
             </button>
           </div>
-          <div className="px-3 py-2.5 flex-1" style={{backgroundColor:bgColor}}>
-            <div className="flex items-center gap-1.5 mb-1">{ocrDot}<div className="text-sm font-black truncate" style={{color:textColor}}>{sq ? hl(note.title || '제목 없음', sq) : (note.title || '제목 없음')}</div></div>
+          <div className={`px-3 py-2.5 flex-1 ${cardBgClass}`} style={cardBgStyle}>
+            <div className="flex items-center gap-1.5 mb-1">{ocrDot}<div className={`text-sm font-black truncate ${cardTextClass}`} style={cardTextStyle}>{sq ? hl(note.title || '제목 없음', sq) : (note.title || '제목 없음')}</div></div>
             {sq && (() => { const snip = getSnippet(note, sq); return snip ? (
-              <div className="text-[11px] opacity-70 line-clamp-2 mb-1" style={{color:textColor}}>{hl(snip, sq)}</div>
+              <div className={`text-[11px] opacity-70 line-clamp-2 mb-1 ${cardTextClass}`} style={cardTextStyle}>{hl(snip, sq)}</div>
             ) : null; })()}
             {note.tags && note.tags.length > 0 && (
               <div className="flex flex-wrap gap-1 mb-1.5">
@@ -346,7 +360,7 @@ export const NoteCard: React.FC<Props> = ({
                 ))}
               </div>
             )}
-            <div className="text-[11px] opacity-50 font-bold" style={{color:textColor}}>{fmtDate(note.updatedAt)} {fmtTime(note.updatedAt)}</div>
+            <div className={`text-[11px] opacity-50 font-bold ${cardTextClass}`} style={cardTextStyle}>{fmtDate(note.updatedAt)} {fmtTime(note.updatedAt)}</div>
           </div>
         </div>
       </>
@@ -358,16 +372,17 @@ export const NoteCard: React.FC<Props> = ({
     <>
       {movePopup}
       <div {...longPressProps}
-        className="group relative rounded-2xl overflow-hidden border border-stone-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-all cursor-pointer active:scale-[0.98] flex flex-col"
-        style={{backgroundColor:bgColor}}
+        className={`group relative rounded-2xl overflow-hidden border border-stone-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-all cursor-pointer active:scale-[0.98] flex flex-col ${!hasCover ? cardBgClass : ''}`}
+        style={hasCover ? coverStyle : cardBgStyle}
         onClick={() => selectMode ? onSelect?.(note) : onEdit(note)}>
         {selOverlay}
         <div className="relative aspect-[3/4] overflow-hidden">
+          {!hasCover && pdfDarkOverlay}
           {hasCover
             ? <div className="w-full h-full" style={coverStyle}/>
             : note.dataUrl
               ? <img src={note.dataUrl} alt="" className="w-full h-full object-cover object-top" loading="lazy"/>
-              : <div className="w-full h-full flex items-center justify-center" style={{backgroundColor:bgColor}}><span className="text-4xl opacity-20">✏️</span></div>}
+              : <div className={`w-full h-full flex items-center justify-center ${cardBgClass}`} style={cardBgStyle}><span className="text-4xl opacity-20">✏️</span></div>}
           {note.isPinned && (
             <div className="absolute top-2 left-2 w-6 h-6 bg-amber-400 rounded-full flex items-center justify-center shadow-md">
               <Pin className="w-3 h-3 text-stone-900 fill-stone-900"/>
@@ -385,12 +400,12 @@ export const NoteCard: React.FC<Props> = ({
             <Pin className={`w-3 h-3 ${note.isPinned?'text-stone-900 fill-stone-900':'text-white'}`}/>
           </button>
         </div>
-        <div className="px-2.5 py-2 flex-1" style={{backgroundColor:bgColor}}>
-          <div className="flex items-center gap-1 mb-0.5">{ocrDot}<div className="text-xs font-black truncate" style={{color:textColor}}>{sq ? hl(note.title || '제목 없음', sq) : (note.title || '제목 없음')}</div></div>
+        <div className={`px-2.5 py-2 flex-1 ${cardBgClass}`} style={cardBgStyle}>
+          <div className="flex items-center gap-1 mb-0.5">{ocrDot}<div className={`text-xs font-black truncate ${cardTextClass}`} style={cardTextStyle}>{sq ? hl(note.title || '제목 없음', sq) : (note.title || '제목 없음')}</div></div>
           {sq && (() => { const snip = getSnippet(note, sq); return snip ? (
-            <div className="text-[10px] opacity-60 line-clamp-1 mb-0.5" style={{color:textColor}}>{hl(snip, sq)}</div>
+            <div className={`text-[10px] opacity-60 line-clamp-1 mb-0.5 ${cardTextClass}`} style={cardTextStyle}>{hl(snip, sq)}</div>
           ) : null; })()}
-          <div className="text-[10px] opacity-50 font-bold" style={{color:textColor}}>{fmtDate(note.updatedAt)} {fmtTime(note.updatedAt)}</div>
+          <div className={`text-[10px] opacity-50 font-bold ${cardTextClass}`} style={cardTextStyle}>{fmtDate(note.updatedAt)} {fmtTime(note.updatedAt)}</div>
         </div>
       </div>
     </>

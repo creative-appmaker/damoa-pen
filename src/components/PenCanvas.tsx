@@ -1166,12 +1166,15 @@ export const PenCanvas: React.FC<Props> = ({
           try {
             await openNativePdf(editingNote.pdfBase64!);
             nativePdfReadyRef.current = true;
-            await loadPageBg(startPage);
-            // 썸네일 없는 기존 PDF 노트 자동 갱신
+            // 썸네일 없는 기존 PDF 노트: 항상 0페이지(표지)로 캡처 후 startPage로 복원
             if (!editingNote.dataUrl) {
+              await loadPageBg(0);
               await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
               const raw = getExportDataUrl();
               if (raw) { const thumb = await compress(raw, 1200, 0.75); if (thumb) onSave(thumb, editingNote.ocrText ?? '', editingNote.title ?? '', 'white', [], undefined, editingNote.pdfBase64, editingNote.pdfText, editingNote.pdfPageCount, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined); }
+              if (startPage !== 0) await loadPageBg(startPage);
+            } else {
+              await loadPageBg(startPage);
             }
             // 백그라운드 미리 렌더
             for (let i = 0; i < prefetchEnd; i++) {
@@ -1196,12 +1199,15 @@ export const PenCanvas: React.FC<Props> = ({
           pdfjsLib.getDocument({ data: bytes.buffer }).promise
             .then(async (pdf: any) => {
               pdfDocRef.current = pdf;
-              await loadPageBg(startPage);
-              // 썸네일 없는 기존 PDF 노트 자동 갱신
+              // 썸네일 없는 기존 PDF 노트: 항상 0페이지(표지)로 캡처 후 startPage로 복원
               if (!editingNote.dataUrl) {
+                await loadPageBg(0);
                 await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
                 const raw = getExportDataUrl();
                 if (raw) { const thumb = await compress(raw, 1200, 0.75); if (thumb) onSave(thumb, editingNote.ocrText ?? '', editingNote.title ?? '', 'white', [], undefined, editingNote.pdfBase64, editingNote.pdfText, editingNote.pdfPageCount, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined); }
+                if (startPage !== 0) await loadPageBg(startPage);
+              } else {
+                await loadPageBg(startPage);
               }
               for (let i = 1; i < prefetchEnd; i++) {
                 setPdfRenderMsg(`PDF 미리 렌더 ${i+1}/${count}...`);

@@ -862,14 +862,20 @@ export const PenCanvas: React.FC<Props> = ({
     const container = containerRef.current;
     const w = container?.clientWidth || 800, h = container?.clientHeight || 520;
     const dpr = Math.min(window.devicePixelRatio || 1, 2); // 최대 2x — Lenovo Y700 빈 캔버스 방지
+    const newW = Math.round(w * dpr), newH = Math.round(h * dpr);
+    // 크기가 실제로 변경된 경우에만 캔버스 리셋
+    // (canvas.width = 같은값 이라도 내용이 지워지므로 → 페이지 전환 시 300ms 깜빡임 방지)
+    const needsResize = base.width !== newW || base.height !== newH;
     [base, active].forEach(c => {
-      c.width = w * dpr; c.height = h * dpr;
+      if (needsResize) {
+        c.width = newW; c.height = newH;
+        const ctx = (c.getContext('2d', { desynchronized: true }) || c.getContext('2d')) as CanvasRenderingContext2D;
+        ctx.scale(dpr, dpr); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      }
       c.style.width = `${w}px`; c.style.height = `${h}px`;
-      const ctx = (c.getContext('2d', { desynchronized: true }) || c.getContext('2d')) as CanvasRenderingContext2D;
-      ctx.scale(dpr, dpr); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     });
     cachedRectRef.current = base.getBoundingClientRect();
-    redrawBase();
+    if (needsResize) redrawBase();
   }, [redrawBase]);
 
   // ── PDF 헬퍼 ──────────────────────────────────────────────────────────────

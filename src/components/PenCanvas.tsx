@@ -1556,7 +1556,8 @@ export const PenCanvas: React.FC<Props> = ({
         sr.isSwipe = Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 10;
         sr.classified = true;
         // 인접 페이지를 peek 캔버스에 미리 렌더 (blank flash 방지)
-        if (sr.isSwipe) {
+        // 줌 상태에서는 peek 렌더 스킵 (un-zoomed peek이 줌 깜빡임처럼 보이는 현상 방지)
+        if (sr.isSwipe && canvasXformRef.current.scale <= 1.05) {
           const ci = live.current.pageIdx;
           if (ci > 0)                       renderPeekCanvasRef.current('left',  ci - 1);
           if (ci < pagesLenRef.current - 1) renderPeekCanvasRef.current('right', ci + 1);
@@ -1572,10 +1573,13 @@ export const PenCanvas: React.FC<Props> = ({
         const canGoPrev = curIdx > 0;
 
         // 페이지 이동 방향 → 고무줄 슬라이드 (최대 ±30%)
+        // 줌 상태에서는 슬라이드 오프셋 적용 안 함 (un-zoomed peek 노출 방지)
         if ((dx < 0 && canGoNext) || (dx > 0 && canGoPrev)) {
-          const limited = Math.max(-30, Math.min(30, fraction * 100));
-          setSlideOffset(limited);
-          setSlideActive(false);
+          if (canvasXformRef.current.scale <= 1.05) {
+            const limited = Math.max(-30, Math.min(30, fraction * 100));
+            setSlideOffset(limited);
+            setSlideActive(false);
+          }
         }
 
         // 새 페이지 추가 힌트 (느린 왼쪽 스와이프, 마지막 페이지)
@@ -1620,20 +1624,31 @@ export const PenCanvas: React.FC<Props> = ({
 
         if (absDx > 60) {
           if (elapsed < 400) {
-            // ── 빠른 스와이프 → 페이지 이동 (슬라이드 완료 후 전환) ──
+            // ── 빠른 스와이프 → 페이지 이동 ──
+            // 줌 상태: 슬라이드 없이 즉시 전환 (un-zoomed peek 깜빡임 방지)
+            const isZoomed = canvasXformRef.current.scale > 1.05;
             if (dx < 0 && cur < pagesLenRef.current - 1) {
-              // 나머지 슬라이드 완료 → 페이지 전환 → 즉시 복귀
-              setSlideActive(true); setSlideOffset(-100);
-              setTimeout(() => {
+              if (isZoomed) {
+                setSlideOffset(0);
                 goToPageRef.current(cur + 1);
-                setSlideActive(false); setSlideOffset(0);
-              }, 120);
+              } else {
+                setSlideActive(true); setSlideOffset(-100);
+                setTimeout(() => {
+                  goToPageRef.current(cur + 1);
+                  setSlideActive(false); setSlideOffset(0);
+                }, 120);
+              }
             } else if (dx > 0 && cur > 0) {
-              setSlideActive(true); setSlideOffset(100);
-              setTimeout(() => {
+              if (isZoomed) {
+                setSlideOffset(0);
                 goToPageRef.current(cur - 1);
-                setSlideActive(false); setSlideOffset(0);
-              }, 120);
+              } else {
+                setSlideActive(true); setSlideOffset(100);
+                setTimeout(() => {
+                  goToPageRef.current(cur - 1);
+                  setSlideActive(false); setSlideOffset(0);
+                }, 120);
+              }
             } else {
               snapBack();
             }

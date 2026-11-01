@@ -2814,6 +2814,9 @@ export const PenCanvas: React.FC<Props> = ({
   // 연속 슬라이드 방식: 현재 페이지 + peek 캔버스가 동시에 이동 → iOS 느낌
   const animatedGoToPage = (idx: number) => {
     if (idx === live.current.pageIdx || pageTransitioning.current) { goToPage(idx); return; }
+    // 줌 상태에서는 슬라이드 애니메이션 없이 즉시 전환
+    // (peek 캔버스가 줌 미적용 상태로 렌더되어 시각적으로 깜빡이는 현상 방지)
+    if (canvasXformRef.current.scale > 1.05) { goToPage(idx); return; }
     pageTransitioning.current = true;
     const dir = idx > live.current.pageIdx ? 1 : -1; // +1 = 다음, -1 = 이전
 
